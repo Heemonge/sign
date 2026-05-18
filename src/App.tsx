@@ -1,4 +1,12 @@
-import { useState, useEffect, useRef, useCallback, useMemo, CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  CSSProperties,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   Plus,
   ChevronLeft,
@@ -12,25 +20,41 @@ import {
   Type,
   Palette,
   RotateCcw,
+  Image as ImageIcon,
+  Smile,
+  Play,
+  Download,
+  Upload,
+  CalendarDays,
+  Sparkles,
+  Camera,
+  Loader2,
+  X,
 } from 'lucide-react';
 
 const SERIF = '"Noto Serif KR", "Nanum Myeongjo", "Apple SD Gothic Neo", serif';
 const SANS = '"Pretendard", -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
 const BG = '#f6f1e7';
 const STORAGE_KEY = 'munjang.archive';
+const STORAGE_VERSION = 2;
 
-const FONTS: { id: string; label: string; family: string }[] = [
+const FONTS = [
   { id: 'serif', label: '명조', family: SERIF },
   { id: 'sans', label: '고딕', family: SANS },
   { id: 'pen', label: '펜글씨', family: '"Nanum Pen Script", cursive' },
   { id: 'gowun', label: '고운', family: '"Gowun Dodum", sans-serif' },
   { id: 'gaegu', label: '개구', family: '"Gaegu", cursive' },
   { id: 'melody', label: '멜로디', family: '"Hi Melody", cursive' },
-];
+] as const;
 
 const CHAR_COLORS = ['#1c1917', '#78716c', '#b45309', '#b91c1c', '#1d4ed8', '#15803d'];
 const PEN_COLORS = ['#1c1917', '#57534e', '#b91c1c', '#c2410c', '#a16207', '#1d4ed8', '#15803d', '#a21caf'];
 const PEN_SIZES = [1.5, 3, 6, 10];
+const ROTATIONS = [-15, -7, 0, 7, 15];
+
+const STICKER_PALETTE = ['❤️', '🌸', '✨', '🌿', '☁️', '⭐', '🍃', '🌙', '🕊️', '🌷', '🎀', '📖', '☕', '🫧'];
+
+type PaperKind = 'plain' | 'lined' | 'grid' | 'dot' | 'hanji';
 
 const PAPERS: { id: PaperKind; label: string }[] = [
   { id: 'plain', label: '무지' },
@@ -40,12 +64,39 @@ const PAPERS: { id: PaperKind; label: string }[] = [
   { id: 'hanji', label: '한지' },
 ];
 
-type PaperKind = 'plain' | 'lined' | 'grid' | 'dot' | 'hanji';
+type BrushKind = 'pen' | 'fountain' | 'pencil' | 'marker' | 'brush';
+
+const BRUSHES: { id: BrushKind; label: string }[] = [
+  { id: 'pen', label: '펜' },
+  { id: 'fountain', label: '만년필' },
+  { id: 'pencil', label: '연필' },
+  { id: 'marker', label: '형광펜' },
+  { id: 'brush', label: '붓' },
+];
 
 type CharStyle = {
   fontId?: string;
   sizeScale?: number;
   color?: string;
+  rotation?: number;
+};
+
+type Point = { x: number; y: number; p: number };
+
+type Stroke = {
+  tool: 'pen' | 'eraser';
+  brush: BrushKind;
+  color: string;
+  size: number;
+  points: Point[];
+};
+
+type Sticker = {
+  id: string;
+  emoji: string;
+  x: number;
+  y: number;
+  size: number;
 };
 
 type Sentence = {
@@ -61,21 +112,25 @@ type Sentence = {
   transcribedAt?: string;
   charStyles?: Record<number, CharStyle>;
   drawing?: string;
+  strokes?: Stroke[];
+  stickers?: Sticker[];
   paper?: PaperKind;
+  backgroundImage?: string;
+  canvasW?: number;
+  canvasH?: number;
 };
 
 type NewSentenceInput = Pick<Sentence, 'text' | 'title' | 'author' | 'page' | 'tags'>;
-type View = 'archive' | 'add' | 'detail' | 'transcribe';
-
-type Point = { x: number; y: number; p: number };
-type Stroke = { tool: 'pen' | 'eraser'; color: string; size: number; points: Point[] };
+type View = 'archive' | 'add' | 'detail' | 'transcribe' | 'calendar' | 'replay';
 
 function loadSentences(): Sentence[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as Sentence[]) : [];
+    if (Array.isArray(parsed)) return parsed as Sentence[];
+    if (parsed && Array.isArray(parsed.sentences)) return parsed.sentences as Sentence[];
+    return [];
   } catch {
     return [];
   }
@@ -83,10 +138,54 @@ function loadSentences(): Sentence[] {
 
 function saveSentences(data: Sentence[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ v: STORAGE_VERSION, sentences: data }));
   } catch (e) {
-    console.error(e);
+    console.error('save failed', e);
+    alert('저장 공간이 부족해요. 오래된 항목을 삭제하거나 백업 후 정리해주세요.');
   }
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function ymd(iso: string) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function ymdLocal(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function todaySeed() {
+  const d = new Date();
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
+function seededIndex(seed: number, length: number) {
+  let h = seed | 0;
+  h = (h ^ 61) ^ (h >>> 16);
+  h = h + (h << 3);
+  h = h ^ (h >>> 4);
+  h = Math.imul(h, 0x27d4eb2d);
+  h = h ^ (h >>> 15);
+  return Math.abs(h) % length;
+}
+
+function computeStreak(sentences: Sentence[]) {
+  const dates = new Set<string>();
+  for (const s of sentences) if (s.transcribedAt) dates.add(ymd(s.transcribedAt));
+  if (dates.size === 0) return 0;
+  let streak = 0;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  while (dates.has(ymdLocal(d))) {
+    streak++;
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
 }
 
 export default function App() {
@@ -139,6 +238,34 @@ export default function App() {
       )
     : sentences;
 
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify({ v: STORAGE_VERSION, sentences }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `munjang-backup-${ymdLocal(new Date())}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importJson = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        const incoming: Sentence[] = Array.isArray(data) ? data : data.sentences;
+        if (!Array.isArray(incoming)) throw new Error('invalid');
+        const byId = new Map(sentences.map((s) => [s.id, s] as const));
+        for (const s of incoming) byId.set(s.id, { ...byId.get(s.id), ...s } as Sentence);
+        persist(Array.from(byId.values()).sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1)));
+        alert(`${incoming.length}개의 문장을 불러왔어요.`);
+      } catch {
+        alert('백업 파일을 읽을 수 없어요.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: BG }}>
@@ -152,14 +279,18 @@ export default function App() {
       {view === 'archive' && (
         <ArchiveView
           sentences={filtered}
+          allSentences={sentences}
           totalCount={sentences.length}
           onAdd={() => setView('add')}
           onSelect={(id) => {
             setSelectedId(id);
             setView('detail');
           }}
+          onCalendar={() => setView('calendar')}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
+          onExport={exportJson}
+          onImport={importJson}
         />
       )}
       {view === 'add' && <AddView onSave={addSentence} onCancel={() => setView('archive')} />}
@@ -168,6 +299,7 @@ export default function App() {
           sentence={selected}
           onBack={() => setView('archive')}
           onTranscribe={() => setView('transcribe')}
+          onReplay={() => setView('replay')}
           onUpdate={(updates) => updateOne(selected.id, updates)}
           onDelete={() => deleteOne(selected.id)}
         />
@@ -185,41 +317,125 @@ export default function App() {
           }
         />
       )}
+      {view === 'calendar' && (
+        <CalendarView sentences={sentences} onBack={() => setView('archive')} />
+      )}
+      {view === 'replay' && selected && (
+        <ReplayView sentence={selected} onBack={() => setView('detail')} />
+      )}
     </div>
   );
 }
 
 type ArchiveViewProps = {
   sentences: Sentence[];
+  allSentences: Sentence[];
   totalCount: number;
   onAdd: () => void;
   onSelect: (id: string) => void;
+  onCalendar: () => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
+  onExport: () => void;
+  onImport: (file: File) => void;
 };
 
-function ArchiveView({ sentences, totalCount, onAdd, onSelect, searchQuery, setSearchQuery }: ArchiveViewProps) {
+function ArchiveView({
+  sentences,
+  allSentences,
+  totalCount,
+  onAdd,
+  onSelect,
+  onCalendar,
+  searchQuery,
+  setSearchQuery,
+  onExport,
+  onImport,
+}: ArchiveViewProps) {
   const [showSearch, setShowSearch] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const streak = useMemo(() => computeStreak(allSentences), [allSentences]);
+  const todayPick = useMemo(() => {
+    if (allSentences.length === 0) return null;
+    return allSentences[seededIndex(todaySeed(), allSentences.length)];
+  }, [allSentences]);
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12 pb-32">
-      <header className="mb-12 flex items-end justify-between">
+      <header className="mb-10 flex items-end justify-between">
         <div>
           <h1 className="text-4xl text-stone-800 mb-2" style={{ letterSpacing: '0.08em' }}>문장</h1>
           <p className="text-sm text-stone-500" style={{ fontFamily: SANS }}>
             {totalCount === 0 ? '오늘 한 문장을 모아볼까요' : `${totalCount}개의 문장을 모았어요`}
+            {streak > 0 && <span className="ml-2 text-stone-400">· {streak}일째</span>}
           </p>
         </div>
-        <button
-          onClick={() => {
-            setShowSearch(!showSearch);
-            if (showSearch) setSearchQuery('');
-          }}
-          className="text-stone-500 hover:text-stone-800 transition-colors p-2"
-          aria-label="검색"
-        >
-          <Search size={20} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onCalendar}
+            className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+            aria-label="달력"
+          >
+            <CalendarDays size={20} />
+          </button>
+          <button
+            onClick={() => {
+              setShowSearch(!showSearch);
+              if (showSearch) setSearchQuery('');
+            }}
+            className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+            aria-label="검색"
+          >
+            <Search size={20} />
+          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowMenu((v) => !v)}
+              className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+              aria-label="더보기"
+            >
+              <span className="text-xl leading-none">⋯</span>
+            </button>
+            {showMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 bg-white border border-stone-200 rounded-lg shadow-md py-1 z-10 min-w-[10rem]"
+                style={{ fontFamily: SANS }}
+                onMouseLeave={() => setShowMenu(false)}
+              >
+                <button
+                  onClick={() => {
+                    onExport();
+                    setShowMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                >
+                  <Download size={14} /> 백업 내보내기
+                </button>
+                <button
+                  onClick={() => {
+                    fileRef.current?.click();
+                    setShowMenu(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                >
+                  <Upload size={14} /> 백업 불러오기
+                </button>
+              </div>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onImport(f);
+                e.target.value = '';
+              }}
+            />
+          </div>
+        </div>
       </header>
 
       {showSearch && (
@@ -232,6 +448,26 @@ function ArchiveView({ sentences, totalCount, onAdd, onSelect, searchQuery, setS
           style={{ fontFamily: SANS }}
           autoFocus
         />
+      )}
+
+      {todayPick && !searchQuery && (
+        <button
+          onClick={() => onSelect(todayPick.id)}
+          className="w-full text-left mb-10 px-7 py-8 bg-gradient-to-br from-stone-100 to-amber-50 border border-amber-100/50 rounded-lg hover:shadow-sm transition-all"
+        >
+          <p className="flex items-center gap-1.5 text-xs text-amber-700/80 tracking-widest mb-4" style={{ fontFamily: SANS }}>
+            <Sparkles size={12} /> 오늘의 한 문장
+          </p>
+          <p className="text-stone-800 text-lg leading-loose" style={{ wordBreak: 'keep-all' }}>
+            {todayPick.text.length > 160 ? todayPick.text.slice(0, 160) + '…' : todayPick.text}
+          </p>
+          {(todayPick.title || todayPick.author) && (
+            <p className="mt-4 text-xs text-stone-500" style={{ fontFamily: SANS }}>
+              {todayPick.title && <span className="italic">『{todayPick.title}』</span>}
+              {todayPick.author && <span> · {todayPick.author}</span>}
+            </p>
+          )}
+        </button>
       )}
 
       {sentences.length === 0 ? (
@@ -293,6 +529,9 @@ function AddView({ onSave, onCancel }: AddViewProps) {
   const [author, setAuthor] = useState('');
   const [page, setPage] = useState('');
   const [tags, setTags] = useState('');
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const photoRef = useRef<HTMLInputElement | null>(null);
 
   const handleSave = () => {
     if (!text.trim()) return;
@@ -307,6 +546,28 @@ function AddView({ onSave, onCancel }: AddViewProps) {
 
   const inputCls =
     'w-full bg-transparent border-b border-stone-300 focus:border-stone-700 outline-none text-stone-800 py-2 transition-colors';
+
+  const runOcr = async (file: File) => {
+    setOcrLoading(true);
+    setOcrProgress(0);
+    try {
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker(['kor', 'eng'], 1, {
+        logger: (m: { status: string; progress: number }) => {
+          if (m.status === 'recognizing text') setOcrProgress(m.progress);
+        },
+      });
+      const { data } = await worker.recognize(file);
+      await worker.terminate();
+      const cleaned = data.text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      setText((prev) => (prev ? prev + '\n' + cleaned : cleaned));
+    } catch (e) {
+      console.error(e);
+      alert('글자 인식에 실패했어요. 사진을 다시 시도해주세요.');
+    } finally {
+      setOcrLoading(false);
+    }
+  };
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12">
@@ -326,7 +587,30 @@ function AddView({ onSave, onCancel }: AddViewProps) {
 
       <div className="space-y-10">
         <div>
-          <label className="block text-xs text-stone-500 mb-3 tracking-wide" style={{ fontFamily: SANS }}>문장</label>
+          <div className="flex items-center justify-between mb-3">
+            <label className="block text-xs text-stone-500 tracking-wide" style={{ fontFamily: SANS }}>문장</label>
+            <button
+              onClick={() => photoRef.current?.click()}
+              disabled={ocrLoading}
+              className="text-xs text-stone-500 hover:text-stone-800 flex items-center gap-1 disabled:text-stone-300"
+              style={{ fontFamily: SANS }}
+            >
+              {ocrLoading ? <Loader2 size={12} className="animate-spin" /> : <Camera size={12} />}
+              {ocrLoading ? `읽는 중 ${Math.round(ocrProgress * 100)}%` : '책 사진에서 가져오기'}
+            </button>
+            <input
+              ref={photoRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) runOcr(f);
+                e.target.value = '';
+              }}
+            />
+          </div>
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -375,11 +659,12 @@ type DetailViewProps = {
   sentence: Sentence;
   onBack: () => void;
   onTranscribe: () => void;
+  onReplay: () => void;
   onUpdate: (updates: Partial<Sentence>) => void;
   onDelete: () => void;
 };
 
-function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: DetailViewProps) {
+function DetailView({ sentence, onBack, onTranscribe, onReplay, onUpdate, onDelete }: DetailViewProps) {
   const [thoughts, setThoughts] = useState(sentence.thoughts || '');
   const [editingThoughts, setEditingThoughts] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -394,9 +679,21 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
     setEditingThoughts(false);
   };
 
-  const formatDate = (iso: string) => {
-    const d = new Date(iso);
-    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  const hasTranscription = (sentence.strokes && sentence.strokes.length > 0) || !!sentence.drawing;
+
+  const downloadFramed = async () => {
+    try {
+      const blob = await renderFramed(sentence);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `munjang-${sentence.id}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert('이미지 생성에 실패했어요.');
+    }
   };
 
   return (
@@ -443,11 +740,29 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
         )}
       </div>
 
-      {sentence.drawing && (
+      {hasTranscription && (
         <div className="mb-12">
-          <h3 className="text-sm text-stone-500 tracking-wide mb-4" style={{ fontFamily: SANS }}>필사한 글씨</h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm text-stone-500 tracking-wide" style={{ fontFamily: SANS }}>필사한 글씨</h3>
+            <div className="flex items-center gap-1 text-xs" style={{ fontFamily: SANS }}>
+              {sentence.strokes && sentence.strokes.length > 0 && (
+                <button
+                  onClick={onReplay}
+                  className="text-stone-500 hover:text-stone-800 flex items-center gap-1 px-2 py-1"
+                >
+                  <Play size={12} /> 재생
+                </button>
+              )}
+              <button
+                onClick={downloadFramed}
+                className="text-stone-500 hover:text-stone-800 flex items-center gap-1 px-2 py-1"
+              >
+                <Download size={12} /> 저장
+              </button>
+            </div>
+          </div>
           <div className="rounded-lg overflow-hidden border border-stone-200 bg-white">
-            <img src={sentence.drawing} alt="필사" className="w-full block" />
+            <TranscriptionPreview sentence={sentence} />
           </div>
         </div>
       )}
@@ -504,6 +819,65 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
   );
 }
 
+function TranscriptionPreview({ sentence }: { sentence: Sentence }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState(0);
+
+  useEffect(() => {
+    const update = () => {
+      if (wrapRef.current) setW(wrapRef.current.clientWidth);
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    if (!sentence.strokes || w === 0) return;
+    const srcW = sentence.canvasW ?? 800;
+    const srcH = sentence.canvasH ?? 480;
+    const ratio = window.devicePixelRatio || 1;
+    const targetH = Math.round((w * srcH) / srcW);
+    const canvas = canvasRef.current!;
+    canvas.width = w * ratio;
+    canvas.height = targetH * ratio;
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${targetH}px`;
+    const ctx = canvas.getContext('2d')!;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const scale = w / srcW;
+    ctx.save();
+    paintPaperCtx(ctx, sentence.paper ?? 'plain', w, targetH);
+    if (sentence.backgroundImage) {
+      const img = new Image();
+      img.onload = () => {
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        drawCover(ctx, img, 0, 0, w, targetH);
+        ctx.restore();
+        drawStrokesScaled(ctx, sentence.strokes!, scale);
+        drawStickersScaled(ctx, sentence.stickers ?? [], scale);
+      };
+      img.src = sentence.backgroundImage;
+    } else {
+      drawStrokesScaled(ctx, sentence.strokes!, scale);
+      drawStickersScaled(ctx, sentence.stickers ?? [], scale);
+    }
+    ctx.restore();
+  }, [sentence, w]);
+
+  if (!sentence.strokes || sentence.strokes.length === 0) {
+    return sentence.drawing ? <img src={sentence.drawing} alt="필사" className="w-full block" /> : null;
+  }
+
+  return (
+    <div ref={wrapRef} className="w-full">
+      <canvas ref={canvasRef} className="block" />
+    </div>
+  );
+}
+
 function StyledSentence({
   text,
   charStyles,
@@ -524,6 +898,7 @@ function StyledSentence({
         const fontFamily = FONTS.find((f) => f.id === (st?.fontId ?? 'serif'))?.family ?? SERIF;
         const size = baseSize * (st?.sizeScale ?? 1);
         const color = st?.color ?? '#292524';
+        const rotation = st?.rotation ?? 0;
         const isWhitespace = ch === ' ' || ch === '\n';
         const isSelected = selectedIndex === i;
         return (
@@ -540,7 +915,9 @@ function StyledSentence({
               padding: isSelected ? '0 2px' : undefined,
               transition: 'background-color 120ms',
               whiteSpace: ch === '\n' ? 'pre' : undefined,
-              display: 'inline',
+              display: 'inline-block',
+              transform: rotation ? `rotate(${rotation}deg)` : undefined,
+              transformOrigin: 'center',
             }}
           >
             {ch}
@@ -554,23 +931,38 @@ function StyledSentence({
 type TranscribeViewProps = {
   sentence: Sentence;
   onBack: () => void;
-  onComplete: (payload: { drawing?: string; charStyles?: Record<number, CharStyle>; paper?: PaperKind }) => void;
+  onComplete: (payload: {
+    drawing?: string;
+    strokes?: Stroke[];
+    stickers?: Sticker[];
+    charStyles?: Record<number, CharStyle>;
+    paper?: PaperKind;
+    backgroundImage?: string;
+    canvasW?: number;
+    canvasH?: number;
+  }) => void;
 };
 
 function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const bgImgRef = useRef<HTMLImageElement | null>(null);
+  const [strokes, setStrokes] = useState<Stroke[]>(sentence.strokes ?? []);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
+  const [brush, setBrush] = useState<BrushKind>('pen');
   const [penColor, setPenColor] = useState<string>(PEN_COLORS[0]);
   const [penSize, setPenSize] = useState<number>(PEN_SIZES[1]);
   const [paper, setPaper] = useState<PaperKind>(sentence.paper ?? 'plain');
+  const [backgroundImage, setBackgroundImage] = useState<string | undefined>(sentence.backgroundImage);
   const [penOnly, setPenOnly] = useState<boolean>(true);
   const [charStyles, setCharStyles] = useState<Record<number, CharStyle>>(sentence.charStyles ?? {});
   const [editingChar, setEditingChar] = useState<number | null>(null);
+  const [stickers, setStickers] = useState<Sticker[]>(sentence.stickers ?? []);
+  const [stickerMode, setStickerMode] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({ w: 800, h: 480 });
+  const bgFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -578,13 +970,26 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
       if (!el) return;
       const rect = el.getBoundingClientRect();
       const w = Math.max(280, Math.floor(rect.width));
-      const h = Math.max(320, Math.floor(Math.min(window.innerHeight * 0.55, w * 0.7)));
+      const h = Math.max(320, Math.floor(Math.min(window.innerHeight * 0.6, w * 0.75)));
       setCanvasSize({ w, h });
     };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
   }, []);
+
+  useEffect(() => {
+    if (backgroundImage) {
+      const img = new Image();
+      img.onload = () => {
+        bgImgRef.current = img;
+        drawAll();
+      };
+      img.src = backgroundImage;
+    } else {
+      bgImgRef.current = null;
+    }
+  }, [backgroundImage]);
 
   const drawAll = useCallback(() => {
     const canvas = canvasRef.current;
@@ -593,35 +998,17 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
     if (!ctx) return;
     const ratio = window.devicePixelRatio || 1;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const all = currentStrokeRef.current ? [...strokes, currentStrokeRef.current] : strokes;
-    for (const s of all) {
-      if (s.points.length === 0) continue;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = s.color;
-      if (s.points.length === 1) {
-        const p = s.points[0];
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, (s.size * (0.6 + p.p * 0.6)) / 2, 0, Math.PI * 2);
-        ctx.fillStyle = s.color;
-        ctx.fill();
-        continue;
-      }
-      for (let i = 1; i < s.points.length; i++) {
-        const a = s.points[i - 1];
-        const b = s.points[i];
-        const w = s.size * (0.6 + ((a.p + b.p) / 2) * 0.6);
-        ctx.lineWidth = w;
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-      }
+    ctx.clearRect(0, 0, canvasSize.w, canvasSize.h);
+    if (bgImgRef.current) {
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      drawCover(ctx, bgImgRef.current, 0, 0, canvasSize.w, canvasSize.h);
+      ctx.restore();
     }
-    ctx.globalCompositeOperation = 'source-over';
-  }, [strokes]);
+    const all = currentStrokeRef.current ? [...strokes, currentStrokeRef.current] : strokes;
+    drawStrokes(ctx, all);
+    drawStickers(ctx, stickers);
+  }, [strokes, stickers, canvasSize.w, canvasSize.h]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -653,13 +1040,34 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
     return e.pointerType === 'pen' || e.pointerType === 'mouse';
   };
 
+  const tryRemoveStickerAt = (x: number, y: number) => {
+    for (let i = stickers.length - 1; i >= 0; i--) {
+      const st = stickers[i];
+      if (Math.hypot(x - st.x, y - st.y) <= st.size * 0.6) {
+        setStickers((prev) => prev.filter((_, j) => j !== i));
+        return true;
+      }
+    }
+    return false;
+  };
+
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (stickerMode) {
+      const p = getPos(e);
+      if (tryRemoveStickerAt(p.x, p.y)) return;
+      setStickers((prev) => [
+        ...prev,
+        { id: `${Date.now()}-${Math.random().toString(16).slice(2, 6)}`, emoji: stickerMode, x: p.x, y: p.y, size: 36 },
+      ]);
+      return;
+    }
     if (!shouldDraw(e)) return;
     e.preventDefault();
     (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
     const p = getPos(e);
     currentStrokeRef.current = {
       tool,
+      brush,
       color: tool === 'pen' ? penColor : '#000000',
       size: tool === 'pen' ? penSize : penSize * 3,
       points: [p],
@@ -668,6 +1076,7 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (stickerMode) return;
     if (!currentStrokeRef.current) return;
     if (!shouldDraw(e)) return;
     const p = getPos(e);
@@ -676,6 +1085,7 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
   };
 
   const onPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (stickerMode) return;
     if (!currentStrokeRef.current) return;
     const finished = currentStrokeRef.current;
     currentStrokeRef.current = null;
@@ -685,22 +1095,36 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
     } catch {}
   };
 
-  const undo = () => setStrokes((prev) => prev.slice(0, -1));
-  const clearAll = () => setStrokes([]);
+  const undo = () => {
+    if (stickers.length > strokes.length && stickers.length > 0) {
+      setStickers((prev) => prev.slice(0, -1));
+    } else if (strokes.length > 0) {
+      setStrokes((prev) => prev.slice(0, -1));
+    }
+  };
+  const clearAll = () => {
+    if (!confirm('정말로 다 지울까요?')) return;
+    setStrokes([]);
+    setStickers([]);
+  };
+
+  const handleBgUpload = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => setBackgroundImage(String(reader.result));
+    reader.readAsDataURL(file);
+  };
 
   const handleComplete = () => {
-    const src = canvasRef.current;
-    let drawing: string | undefined;
-    if (src && strokes.length > 0) {
-      const out = document.createElement('canvas');
-      out.width = canvasSize.w;
-      out.height = canvasSize.h;
-      const octx = out.getContext('2d')!;
-      paintPaper(octx, paper, canvasSize.w, canvasSize.h);
-      octx.drawImage(src, 0, 0, canvasSize.w, canvasSize.h);
-      drawing = out.toDataURL('image/png');
-    }
-    onComplete({ drawing, charStyles, paper });
+    onComplete({
+      strokes,
+      stickers,
+      charStyles,
+      paper,
+      backgroundImage,
+      canvasW: canvasSize.w,
+      canvasH: canvasSize.h,
+      drawing: undefined,
+    });
     setDone(true);
     setTimeout(() => onBack(), 1400);
   };
@@ -736,12 +1160,7 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
         </button>
         <div className="flex items-center gap-3 text-xs text-stone-500">
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={penOnly}
-              onChange={(e) => setPenOnly(e.target.checked)}
-              className="accent-stone-700"
-            />
+            <input type="checkbox" checked={penOnly} onChange={(e) => setPenOnly(e.target.checked)} className="accent-stone-700" />
             펜으로만
           </label>
           <button
@@ -787,13 +1206,31 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
               className="block relative"
-              style={{ touchAction: 'none', cursor: tool === 'eraser' ? 'cell' : 'crosshair' }}
+              style={{
+                touchAction: 'none',
+                cursor: stickerMode ? 'copy' : tool === 'eraser' ? 'cell' : 'crosshair',
+              }}
             />
+            {stickerMode && (
+              <div
+                className="absolute top-3 left-3 right-3 bg-white/95 border border-stone-200 rounded-md px-3 py-1.5 text-xs text-stone-600 flex items-center justify-between"
+                style={{ fontFamily: SANS }}
+              >
+                <span>
+                  <span className="mr-1.5 text-base">{stickerMode}</span> 캔버스를 눌러 붙여보세요. 스티커를 눌러 지울 수도 있어요.
+                </span>
+                <button onClick={() => setStickerMode(null)} className="text-stone-500 hover:text-stone-800 ml-2">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
 
           <Toolbar
             tool={tool}
             setTool={setTool}
+            brush={brush}
+            setBrush={setBrush}
             penColor={penColor}
             setPenColor={setPenColor}
             penSize={penSize}
@@ -802,7 +1239,23 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
             setPaper={setPaper}
             onUndo={undo}
             onClear={clearAll}
-            canUndo={strokes.length > 0}
+            canUndo={strokes.length > 0 || stickers.length > 0}
+            onBgUpload={() => bgFileRef.current?.click()}
+            onBgClear={() => setBackgroundImage(undefined)}
+            hasBg={!!backgroundImage}
+            stickerMode={stickerMode}
+            setStickerMode={setStickerMode}
+          />
+          <input
+            ref={bgFileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleBgUpload(f);
+              e.target.value = '';
+            }}
           />
         </div>
       </div>
@@ -880,6 +1333,26 @@ function CharStylePicker({
         </div>
 
         <div>
+          <p className="text-[10px] text-stone-400 tracking-widest mb-1.5">기울기</p>
+          <div className="flex gap-1.5">
+            {ROTATIONS.map((r) => {
+              const active = (style.rotation ?? 0) === r;
+              return (
+                <button
+                  key={r}
+                  onClick={() => onChange({ rotation: r })}
+                  className={`px-2.5 py-1 rounded-md text-xs border ${
+                    active ? 'border-stone-800 bg-stone-800 text-stone-50' : 'border-stone-200 text-stone-600 hover:border-stone-400'
+                  }`}
+                >
+                  {r === 0 ? '바로' : `${r}°`}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
           <p className="text-[10px] text-stone-400 tracking-widest mb-1.5 flex items-center gap-1"><Palette size={11} /> 색</p>
           <div className="flex gap-1.5">
             {CHAR_COLORS.map((c) => {
@@ -904,6 +1377,8 @@ function CharStylePicker({
 function Toolbar({
   tool,
   setTool,
+  brush,
+  setBrush,
   penColor,
   setPenColor,
   penSize,
@@ -913,9 +1388,16 @@ function Toolbar({
   onUndo,
   onClear,
   canUndo,
+  onBgUpload,
+  onBgClear,
+  hasBg,
+  stickerMode,
+  setStickerMode,
 }: {
   tool: 'pen' | 'eraser';
   setTool: (t: 'pen' | 'eraser') => void;
+  brush: BrushKind;
+  setBrush: (b: BrushKind) => void;
   penColor: string;
   setPenColor: (c: string) => void;
   penSize: number;
@@ -925,7 +1407,13 @@ function Toolbar({
   onUndo: () => void;
   onClear: () => void;
   canUndo: boolean;
+  onBgUpload: () => void;
+  onBgClear: () => void;
+  hasBg: boolean;
+  stickerMode: string | null;
+  setStickerMode: (s: string | null) => void;
 }) {
+  const [showStickers, setShowStickers] = useState(false);
   return (
     <div className="mt-4 bg-white/80 border border-stone-200 rounded-lg p-3 space-y-3" style={{ fontFamily: SANS }}>
       <div className="flex items-center gap-2 flex-wrap">
@@ -948,6 +1436,23 @@ function Toolbar({
           </button>
         </div>
 
+        <div className="flex border border-stone-200 rounded-md overflow-hidden">
+          {BRUSHES.map((b) => (
+            <button
+              key={b.id}
+              onClick={() => {
+                setBrush(b.id);
+                setTool('pen');
+              }}
+              className={`px-2.5 py-1.5 text-xs border-l first:border-l-0 border-stone-200 ${
+                brush === b.id && tool === 'pen' ? 'bg-stone-800 text-stone-50' : 'text-stone-600 hover:bg-stone-50'
+              }`}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-1.5 ml-1">
           {PEN_SIZES.map((s) => (
             <button
@@ -963,7 +1468,7 @@ function Toolbar({
           ))}
         </div>
 
-        <div className="flex items-center gap-1.5 ml-1">
+        <div className="flex items-center gap-1.5 ml-1 flex-wrap">
           {PEN_COLORS.map((c) => (
             <button
               key={c}
@@ -1009,57 +1514,112 @@ function Toolbar({
             {p.label}
           </button>
         ))}
+
+        <div className="mx-2 h-4 w-px bg-stone-200" />
+
+        <button
+          onClick={onBgUpload}
+          className="text-xs px-2.5 py-1 rounded-md border border-stone-200 text-stone-600 hover:bg-stone-50 flex items-center gap-1"
+        >
+          <ImageIcon size={12} /> {hasBg ? '배경 바꾸기' : '배경 사진'}
+        </button>
+        {hasBg && (
+          <button
+            onClick={onBgClear}
+            className="text-xs px-2.5 py-1 rounded-md border border-stone-200 text-stone-600 hover:bg-stone-50"
+          >
+            배경 지우기
+          </button>
+        )}
+
+        <div className="mx-2 h-4 w-px bg-stone-200" />
+
+        <div className="relative">
+          <button
+            onClick={() => setShowStickers((v) => !v)}
+            className={`text-xs px-2.5 py-1 rounded-md border flex items-center gap-1 ${
+              stickerMode ? 'border-stone-800 bg-stone-800 text-stone-50' : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+            }`}
+          >
+            <Smile size={12} /> 스티커
+            {stickerMode && <span className="ml-1">{stickerMode}</span>}
+          </button>
+          {showStickers && (
+            <div className="absolute bottom-full mb-1 left-0 bg-white border border-stone-200 rounded-md shadow-md p-2 grid grid-cols-7 gap-1 z-10 min-w-[14rem]">
+              {STICKER_PALETTE.map((e) => (
+                <button
+                  key={e}
+                  onClick={() => {
+                    setStickerMode(e);
+                    setShowStickers(false);
+                  }}
+                  className="w-7 h-7 rounded hover:bg-stone-100 text-lg flex items-center justify-center"
+                >
+                  {e}
+                </button>
+              ))}
+              {stickerMode && (
+                <button
+                  onClick={() => {
+                    setStickerMode(null);
+                    setShowStickers(false);
+                  }}
+                  className="col-span-7 text-xs text-stone-500 hover:text-stone-800 py-1"
+                >
+                  스티커 끄기
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 function PaperBackground({ kind, width, height }: { kind: PaperKind; width: number; height: number }) {
-  const style = useMemo<CSSProperties>(() => {
-    const base: CSSProperties = {
-      position: 'absolute',
-      inset: 0,
-      width,
-      height,
-      pointerEvents: 'none',
-    };
-    if (kind === 'plain') return { ...base, background: '#ffffff' };
-    if (kind === 'hanji') {
-      return {
-        ...base,
-        background:
-          'radial-gradient(circle at 20% 30%, rgba(180,150,100,0.10), transparent 60%), radial-gradient(circle at 80% 70%, rgba(180,150,100,0.08), transparent 60%), #f7f2e6',
-      };
-    }
-    if (kind === 'lined') {
-      return {
-        ...base,
-        backgroundColor: '#ffffff',
-        backgroundImage: 'repeating-linear-gradient(to bottom, transparent 0, transparent 39px, rgba(120,113,108,0.25) 39px, rgba(120,113,108,0.25) 40px)',
-      };
-    }
-    if (kind === 'grid') {
-      return {
-        ...base,
-        backgroundColor: '#ffffff',
-        backgroundImage:
-          'repeating-linear-gradient(to right, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px), repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px)',
-      };
-    }
-    if (kind === 'dot') {
-      return {
-        ...base,
-        backgroundColor: '#ffffff',
-        backgroundImage: 'radial-gradient(rgba(120,113,108,0.35) 1px, transparent 1.5px)',
-        backgroundSize: '20px 20px',
-      };
-    }
-    return base;
-  }, [kind, width, height]);
+  const style = useMemo<CSSProperties>(() => paperStyle(kind, width, height), [kind, width, height]);
   return <div style={style} />;
 }
 
-function paintPaper(ctx: CanvasRenderingContext2D, kind: PaperKind, w: number, h: number) {
+function paperStyle(kind: PaperKind, width: number, height: number): CSSProperties {
+  const base: CSSProperties = { position: 'absolute', inset: 0, width, height, pointerEvents: 'none' };
+  if (kind === 'plain') return { ...base, background: '#ffffff' };
+  if (kind === 'hanji') {
+    return {
+      ...base,
+      background:
+        'radial-gradient(circle at 20% 30%, rgba(180,150,100,0.10), transparent 60%), radial-gradient(circle at 80% 70%, rgba(180,150,100,0.08), transparent 60%), #f7f2e6',
+    };
+  }
+  if (kind === 'lined') {
+    return {
+      ...base,
+      backgroundColor: '#ffffff',
+      backgroundImage:
+        'repeating-linear-gradient(to bottom, transparent 0, transparent 39px, rgba(120,113,108,0.25) 39px, rgba(120,113,108,0.25) 40px)',
+    };
+  }
+  if (kind === 'grid') {
+    return {
+      ...base,
+      backgroundColor: '#ffffff',
+      backgroundImage:
+        'repeating-linear-gradient(to right, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px), repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px)',
+    };
+  }
+  if (kind === 'dot') {
+    return {
+      ...base,
+      backgroundColor: '#ffffff',
+      backgroundImage: 'radial-gradient(rgba(120,113,108,0.35) 1px, transparent 1.5px)',
+      backgroundSize: '20px 20px',
+    };
+  }
+  return base;
+}
+
+function paintPaperCtx(ctx: CanvasRenderingContext2D, kind: PaperKind, w: number, h: number) {
   ctx.save();
   ctx.fillStyle = kind === 'hanji' ? '#f7f2e6' : '#ffffff';
   ctx.fillRect(0, 0, w, h);
@@ -1103,4 +1663,531 @@ function paintPaper(ctx: CanvasRenderingContext2D, kind: PaperKind, w: number, h
     ctx.fillRect(0, 0, w, h);
   }
   ctx.restore();
+}
+
+function drawCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, x: number, y: number, w: number, h: number) {
+  const sR = img.width / img.height;
+  const dR = w / h;
+  let sw = img.width;
+  let sh = img.height;
+  let sx = 0;
+  let sy = 0;
+  if (sR > dR) {
+    sw = img.height * dR;
+    sx = (img.width - sw) / 2;
+  } else {
+    sh = img.width / dR;
+    sy = (img.height - sh) / 2;
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
+function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[]) {
+  drawStrokesScaled(ctx, strokes, 1);
+}
+
+function drawStrokesScaled(ctx: CanvasRenderingContext2D, strokes: Stroke[], scale: number) {
+  for (const s of strokes) {
+    if (s.points.length === 0) continue;
+    drawStrokePartial(ctx, s, s.points.length, scale);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+}
+
+function drawStrokePartial(ctx: CanvasRenderingContext2D, s: Stroke, upto: number, scale: number) {
+  if (s.points.length === 0 || upto <= 0) return;
+  const pts = s.points.slice(0, upto);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const brush = s.brush ?? 'pen';
+  ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+
+  if (brush === 'marker') {
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = s.color;
+    ctx.lineCap = 'butt';
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      ctx.lineWidth = s.size * 1.8 * scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale, a.y * scale);
+      ctx.lineTo(b.x * scale, b.y * scale);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  if (brush === 'pencil') {
+    ctx.globalAlpha = 0.65;
+    ctx.strokeStyle = s.color;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      ctx.lineWidth = s.size * (0.7 + ((a.p + b.p) / 2) * 0.3) * scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale, a.y * scale);
+      ctx.lineTo(b.x * scale, b.y * scale);
+      ctx.stroke();
+      const speed = Math.hypot(b.x - a.x, b.y - a.y);
+      const grains = Math.min(3, Math.floor(speed / 4));
+      ctx.fillStyle = s.color;
+      ctx.globalAlpha = 0.25;
+      for (let g = 0; g < grains; g++) {
+        const t = Math.random();
+        const px = (a.x + (b.x - a.x) * t + (Math.random() - 0.5) * s.size) * scale;
+        const py = (a.y + (b.y - a.y) * t + (Math.random() - 0.5) * s.size) * scale;
+        ctx.fillRect(px, py, 0.8 * scale, 0.8 * scale);
+      }
+      ctx.globalAlpha = 0.65;
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  if (brush === 'brush') {
+    ctx.strokeStyle = s.color;
+    ctx.globalAlpha = 0.9;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const w = s.size * (0.4 + ((a.p + b.p) / 2) * 1.4) * scale;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale, a.y * scale);
+      ctx.lineTo(b.x * scale, b.y * scale);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  if (brush === 'fountain') {
+    ctx.strokeStyle = s.color;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const speed = Math.hypot(b.x - a.x, b.y - a.y);
+      const w = Math.max(s.size * 0.6, s.size * (1.2 - speed * 0.04)) * scale;
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale, a.y * scale);
+      ctx.lineTo(b.x * scale, b.y * scale);
+      ctx.stroke();
+    }
+    return;
+  }
+
+  ctx.strokeStyle = s.color;
+  if (pts.length === 1) {
+    const p = pts[0];
+    ctx.beginPath();
+    ctx.arc(p.x * scale, p.y * scale, ((s.size * (0.6 + p.p * 0.6)) / 2) * scale, 0, Math.PI * 2);
+    ctx.fillStyle = s.color;
+    ctx.fill();
+    return;
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const w = s.size * (0.6 + ((a.p + b.p) / 2) * 0.6) * scale;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(a.x * scale, a.y * scale);
+    ctx.lineTo(b.x * scale, b.y * scale);
+    ctx.stroke();
+  }
+}
+
+function drawStickers(ctx: CanvasRenderingContext2D, stickers: Sticker[]) {
+  drawStickersScaled(ctx, stickers, 1);
+}
+
+function drawStickersScaled(ctx: CanvasRenderingContext2D, stickers: Sticker[], scale: number) {
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const s of stickers) {
+    ctx.font = `${s.size * scale}px serif`;
+    ctx.fillText(s.emoji, s.x * scale, s.y * scale);
+  }
+  ctx.restore();
+}
+
+type CalendarViewProps = {
+  sentences: Sentence[];
+  onBack: () => void;
+};
+
+function CalendarView({ sentences, onBack }: CalendarViewProps) {
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+
+  const dates = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of sentences) {
+      if (!s.transcribedAt) continue;
+      const k = ymd(s.transcribedAt);
+      map.set(k, (map.get(k) ?? 0) + 1);
+    }
+    return map;
+  }, [sentences]);
+
+  const streak = useMemo(() => computeStreak(sentences), [sentences]);
+  const totalDays = dates.size;
+
+  const year = month.getFullYear();
+  const m = month.getMonth();
+  const firstDay = new Date(year, m, 1).getDay();
+  const daysInMonth = new Date(year, m + 1, 0).getDate();
+  const cells: Array<Date | null> = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let i = 1; i <= daysInMonth; i++) cells.push(new Date(year, m, i));
+
+  const today = ymdLocal(new Date());
+
+  return (
+    <div className="max-w-2xl mx-auto px-6 py-12 pb-32">
+      <header className="flex items-center justify-between mb-10" style={{ fontFamily: SANS }}>
+        <button onClick={onBack} className="text-stone-500 hover:text-stone-800 flex items-center gap-1 text-sm">
+          <ChevronLeft size={18} /> 목록
+        </button>
+        <h2 className="text-stone-600 text-sm">필사 달력</h2>
+        <div className="w-12" />
+      </header>
+
+      <div className="grid grid-cols-2 gap-6 mb-10" style={{ fontFamily: SANS }}>
+        <div className="bg-white/70 border border-stone-200 rounded-lg p-5 text-center">
+          <p className="text-xs text-stone-400 tracking-widest mb-2">연속 기록</p>
+          <p className="text-3xl text-stone-800">{streak}<span className="text-base text-stone-500 ml-1">일</span></p>
+        </div>
+        <div className="bg-white/70 border border-stone-200 rounded-lg p-5 text-center">
+          <p className="text-xs text-stone-400 tracking-widest mb-2">필사한 날</p>
+          <p className="text-3xl text-stone-800">{totalDays}<span className="text-base text-stone-500 ml-1">일</span></p>
+        </div>
+      </div>
+
+      <div className="bg-white/70 border border-stone-200 rounded-lg p-6">
+        <div className="flex items-center justify-between mb-5" style={{ fontFamily: SANS }}>
+          <button
+            onClick={() => setMonth(new Date(year, m - 1, 1))}
+            className="text-stone-500 hover:text-stone-800 p-1"
+          >
+            ‹
+          </button>
+          <p className="text-stone-700 text-sm">
+            {year}년 {m + 1}월
+          </p>
+          <button
+            onClick={() => setMonth(new Date(year, m + 1, 1))}
+            className="text-stone-500 hover:text-stone-800 p-1"
+          >
+            ›
+          </button>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 text-center text-[10px] text-stone-400 tracking-widest mb-2" style={{ fontFamily: SANS }}>
+          {['일', '월', '화', '수', '목', '금', '토'].map((d) => (
+            <div key={d}>{d}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((d, i) => {
+            if (!d) return <div key={i} />;
+            const k = ymdLocal(d);
+            const count = dates.get(k) ?? 0;
+            const isToday = k === today;
+            return (
+              <div
+                key={i}
+                className={`aspect-square rounded-md flex items-center justify-center text-sm relative ${
+                  count > 0
+                    ? 'bg-stone-800 text-stone-50'
+                    : isToday
+                    ? 'border border-stone-400 text-stone-700'
+                    : 'text-stone-500'
+                }`}
+              >
+                {d.getDate()}
+                {count > 1 && (
+                  <span
+                    className="absolute -top-1 -right-1 text-[10px] bg-amber-400 text-stone-900 rounded-full px-1.5"
+                    style={{ fontFamily: SANS }}
+                  >
+                    {count}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ReplayViewProps = {
+  sentence: Sentence;
+  onBack: () => void;
+};
+
+function ReplayView({ sentence, onBack }: ReplayViewProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const bgImgRef = useRef<HTMLImageElement | null>(null);
+  const [size, setSize] = useState({ w: 800, h: 480 });
+  const [playing, setPlaying] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const update = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      const w = Math.max(280, Math.floor(el.clientWidth));
+      const srcW = sentence.canvasW ?? 800;
+      const srcH = sentence.canvasH ?? 480;
+      const h = Math.round((w * srcH) / srcW);
+      setSize({ w, h });
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [sentence]);
+
+  useEffect(() => {
+    if (sentence.backgroundImage) {
+      const img = new Image();
+      img.onload = () => {
+        bgImgRef.current = img;
+      };
+      img.src = sentence.backgroundImage;
+    }
+  }, [sentence.backgroundImage]);
+
+  const totalPoints = useMemo(
+    () => (sentence.strokes ?? []).reduce((acc, s) => acc + s.points.length, 0),
+    [sentence.strokes],
+  );
+
+  useEffect(() => {
+    if (!playing) return;
+    const start = performance.now();
+    const duration = Math.min(12000, Math.max(2500, totalPoints * 8));
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - start) / duration);
+      setProgress(p);
+      if (p < 1) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        setPlaying(false);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [playing, totalPoints]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = size.w * ratio;
+    canvas.height = size.h * ratio;
+    canvas.style.width = `${size.w}px`;
+    canvas.style.height = `${size.h}px`;
+    const ctx = canvas.getContext('2d')!;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    paintPaperCtx(ctx, sentence.paper ?? 'plain', size.w, size.h);
+    if (bgImgRef.current) {
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      drawCover(ctx, bgImgRef.current, 0, 0, size.w, size.h);
+      ctx.restore();
+    }
+    const strokes = sentence.strokes ?? [];
+    const srcW = sentence.canvasW ?? 800;
+    const scale = size.w / srcW;
+    const shownPts = Math.floor(totalPoints * progress);
+    let acc = 0;
+    for (const s of strokes) {
+      const remaining = shownPts - acc;
+      if (remaining <= 0) break;
+      const partial = Math.min(s.points.length, remaining);
+      drawStrokePartial(ctx, s, partial, scale);
+      acc += s.points.length;
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    if (progress >= 1) drawStickersScaled(ctx, sentence.stickers ?? [], scale);
+  }, [progress, size, sentence, totalPoints]);
+
+  const replay = () => {
+    setProgress(0);
+    setPlaying(true);
+  };
+
+  if (!sentence.strokes || sentence.strokes.length === 0) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <header className="max-w-3xl mx-auto w-full px-6 py-8" style={{ fontFamily: SANS }}>
+          <button onClick={onBack} className="text-stone-500 hover:text-stone-800 flex items-center gap-1 text-sm">
+            <ChevronLeft size={18} /> 돌아가기
+          </button>
+        </header>
+        <div className="flex-1 flex items-center justify-center text-stone-500" style={{ fontFamily: SANS }}>
+          재생할 글씨가 없어요.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <header className="max-w-3xl mx-auto w-full px-6 py-8 flex items-center justify-between" style={{ fontFamily: SANS }}>
+        <button onClick={onBack} className="text-stone-500 hover:text-stone-800 flex items-center gap-1 text-sm">
+          <ChevronLeft size={18} /> 돌아가기
+        </button>
+        <button
+          onClick={replay}
+          className="px-4 py-1.5 bg-stone-800 hover:bg-stone-900 text-stone-100 rounded-full text-sm flex items-center gap-1.5"
+        >
+          <Play size={14} /> 다시 재생
+        </button>
+      </header>
+      <div className="max-w-3xl mx-auto w-full px-6">
+        <p className="text-stone-700 text-lg leading-loose mb-6" style={{ wordBreak: 'keep-all' }}>
+          {sentence.text}
+        </p>
+        <div ref={containerRef} className="rounded-lg overflow-hidden border border-stone-200 bg-white">
+          <canvas ref={canvasRef} className="block" />
+        </div>
+        <div className="mt-3 h-0.5 bg-stone-200 rounded-full overflow-hidden">
+          <div className="h-full bg-stone-700 transition-[width] duration-150" style={{ width: `${progress * 100}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function renderFramed(sentence: Sentence): Promise<Blob> {
+  const SIZE = 1080;
+  const PAD = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  ctx.fillStyle = '#292524';
+  ctx.font = `400 38px ${SERIF}`;
+  ctx.textAlign = 'center';
+  const lines = wrapText(ctx, sentence.text, SIZE - PAD * 2);
+  let y = PAD + 80;
+  for (const line of lines.slice(0, 4)) {
+    ctx.fillText(line, SIZE / 2, y);
+    y += 60;
+  }
+  if (lines.length > 4) {
+    ctx.fillText('…', SIZE / 2, y);
+    y += 60;
+  }
+
+  const drawingArea = { x: PAD, y: y + 30, w: SIZE - PAD * 2, h: SIZE - y - 30 - PAD - 60 };
+  const inner = document.createElement('canvas');
+  inner.width = drawingArea.w;
+  inner.height = drawingArea.h;
+  const ictx = inner.getContext('2d')!;
+  paintPaperCtx(ictx, sentence.paper ?? 'plain', drawingArea.w, drawingArea.h);
+  if (sentence.backgroundImage) {
+    const img = await loadImage(sentence.backgroundImage);
+    ictx.save();
+    ictx.globalAlpha = 0.85;
+    drawCover(ictx, img, 0, 0, drawingArea.w, drawingArea.h);
+    ictx.restore();
+  }
+  if (sentence.strokes && sentence.strokes.length > 0) {
+    const srcW = sentence.canvasW ?? 800;
+    const scale = drawingArea.w / srcW;
+    drawStrokesScaled(ictx, sentence.strokes, scale);
+    drawStickersScaled(ictx, sentence.stickers ?? [], scale);
+  } else if (sentence.drawing) {
+    const img = await loadImage(sentence.drawing);
+    ictx.drawImage(img, 0, 0, drawingArea.w, drawingArea.h);
+  }
+
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0,0,0,0.08)';
+  ctx.shadowBlur = 20;
+  ctx.shadowOffsetY = 4;
+  roundRect(ctx, drawingArea.x, drawingArea.y, drawingArea.w, drawingArea.h, 12);
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundRect(ctx, drawingArea.x, drawingArea.y, drawingArea.w, drawingArea.h, 12);
+  ctx.clip();
+  ctx.drawImage(inner, drawingArea.x, drawingArea.y);
+  ctx.restore();
+
+  ctx.fillStyle = '#78716c';
+  ctx.font = `400 22px ${SANS}`;
+  const footer = [
+    sentence.title && `『${sentence.title}』`,
+    sentence.author,
+    sentence.transcribedAt && formatDate(sentence.transcribedAt),
+  ]
+    .filter(Boolean)
+    .join('  ·  ');
+  ctx.fillText(footer || '문장 · 필사', SIZE / 2, SIZE - PAD);
+
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
+}
+
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const out: string[] = [];
+  const chars = Array.from(text);
+  let current = '';
+  for (const ch of chars) {
+    if (ch === '\n') {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    const next = current + ch;
+    if (ctx.measureText(next).width > maxWidth) {
+      out.push(current);
+      current = ch;
+    } else {
+      current = next;
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
