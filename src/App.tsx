@@ -1,10 +1,52 @@
-import { useState, useEffect, useRef } from 'react';
-import { Plus, ChevronLeft, PenLine, Search, Trash2, Edit3, Check } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo, CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import {
+  Plus,
+  ChevronLeft,
+  PenLine,
+  Search,
+  Trash2,
+  Edit3,
+  Check,
+  Eraser,
+  Undo2,
+  Type,
+  Palette,
+  RotateCcw,
+} from 'lucide-react';
 
 const SERIF = '"Noto Serif KR", "Nanum Myeongjo", "Apple SD Gothic Neo", serif';
 const SANS = '"Pretendard", -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
 const BG = '#f6f1e7';
 const STORAGE_KEY = 'munjang.archive';
+
+const FONTS: { id: string; label: string; family: string }[] = [
+  { id: 'serif', label: '명조', family: SERIF },
+  { id: 'sans', label: '고딕', family: SANS },
+  { id: 'pen', label: '펜글씨', family: '"Nanum Pen Script", cursive' },
+  { id: 'gowun', label: '고운', family: '"Gowun Dodum", sans-serif' },
+  { id: 'gaegu', label: '개구', family: '"Gaegu", cursive' },
+  { id: 'melody', label: '멜로디', family: '"Hi Melody", cursive' },
+];
+
+const CHAR_COLORS = ['#1c1917', '#78716c', '#b45309', '#b91c1c', '#1d4ed8', '#15803d'];
+const PEN_COLORS = ['#1c1917', '#57534e', '#b91c1c', '#c2410c', '#a16207', '#1d4ed8', '#15803d', '#a21caf'];
+const PEN_SIZES = [1.5, 3, 6, 10];
+
+const PAPERS: { id: PaperKind; label: string }[] = [
+  { id: 'plain', label: '무지' },
+  { id: 'lined', label: '줄' },
+  { id: 'grid', label: '모눈' },
+  { id: 'dot', label: '점' },
+  { id: 'hanji', label: '한지' },
+];
+
+type PaperKind = 'plain' | 'lined' | 'grid' | 'dot' | 'hanji';
+
+type CharStyle = {
+  fontId?: string;
+  sizeScale?: number;
+  color?: string;
+};
 
 type Sentence = {
   id: string;
@@ -17,10 +59,16 @@ type Sentence = {
   createdAt: string;
   transcribed: boolean;
   transcribedAt?: string;
+  charStyles?: Record<number, CharStyle>;
+  drawing?: string;
+  paper?: PaperKind;
 };
 
 type NewSentenceInput = Pick<Sentence, 'text' | 'title' | 'author' | 'page' | 'tags'>;
 type View = 'archive' | 'add' | 'detail' | 'transcribe';
+
+type Point = { x: number; y: number; p: number };
+type Stroke = { tool: 'pen' | 'eraser'; color: string; size: number; points: Point[] };
 
 function loadSentences(): Sentence[] {
   try {
@@ -128,8 +176,12 @@ export default function App() {
         <TranscribeView
           sentence={selected}
           onBack={() => setView('detail')}
-          onComplete={() =>
-            updateOne(selected.id, { transcribed: true, transcribedAt: new Date().toISOString() })
+          onComplete={(payload) =>
+            updateOne(selected.id, {
+              transcribed: true,
+              transcribedAt: new Date().toISOString(),
+              ...payload,
+            })
           }
         />
       )}
@@ -367,9 +419,7 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
       </header>
 
       <div className="mb-12">
-        <p className="text-stone-800 text-2xl leading-loose" style={{ wordBreak: 'keep-all' }}>
-          {sentence.text}
-        </p>
+        <StyledSentence text={sentence.text} charStyles={sentence.charStyles} baseSize={24} />
       </div>
 
       <div className="mb-16 text-sm text-stone-500 space-y-2" style={{ fontFamily: SANS }}>
@@ -392,6 +442,15 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
           </div>
         )}
       </div>
+
+      {sentence.drawing && (
+        <div className="mb-12">
+          <h3 className="text-sm text-stone-500 tracking-wide mb-4" style={{ fontFamily: SANS }}>필사한 글씨</h3>
+          <div className="rounded-lg overflow-hidden border border-stone-200 bg-white">
+            <img src={sentence.drawing} alt="필사" className="w-full block" />
+          </div>
+        </div>
+      )}
 
       <div className="mb-12 pt-8 border-t border-stone-200">
         <div className="flex items-center justify-between mb-4">
@@ -445,29 +504,217 @@ function DetailView({ sentence, onBack, onTranscribe, onUpdate, onDelete }: Deta
   );
 }
 
+function StyledSentence({
+  text,
+  charStyles,
+  baseSize,
+  onCharTap,
+  selectedIndex,
+}: {
+  text: string;
+  charStyles?: Record<number, CharStyle>;
+  baseSize: number;
+  onCharTap?: (index: number) => void;
+  selectedIndex?: number | null;
+}) {
+  return (
+    <p className="leading-loose" style={{ wordBreak: 'keep-all' }}>
+      {Array.from(text).map((ch, i) => {
+        const st = charStyles?.[i];
+        const fontFamily = FONTS.find((f) => f.id === (st?.fontId ?? 'serif'))?.family ?? SERIF;
+        const size = baseSize * (st?.sizeScale ?? 1);
+        const color = st?.color ?? '#292524';
+        const isWhitespace = ch === ' ' || ch === '\n';
+        const isSelected = selectedIndex === i;
+        return (
+          <span
+            key={i}
+            onClick={onCharTap && !isWhitespace ? () => onCharTap(i) : undefined}
+            style={{
+              fontFamily,
+              fontSize: `${size}px`,
+              color,
+              cursor: onCharTap && !isWhitespace ? 'pointer' : 'default',
+              backgroundColor: isSelected ? 'rgba(120, 113, 108, 0.18)' : undefined,
+              borderRadius: 4,
+              padding: isSelected ? '0 2px' : undefined,
+              transition: 'background-color 120ms',
+              whiteSpace: ch === '\n' ? 'pre' : undefined,
+              display: 'inline',
+            }}
+          >
+            {ch}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
 type TranscribeViewProps = {
   sentence: Sentence;
   onBack: () => void;
-  onComplete: () => void;
+  onComplete: (payload: { drawing?: string; charStyles?: Record<number, CharStyle>; paper?: PaperKind }) => void;
 };
 
 function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
-  const [input, setInput] = useState('');
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const currentStrokeRef = useRef<Stroke | null>(null);
+  const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
+  const [penColor, setPenColor] = useState<string>(PEN_COLORS[0]);
+  const [penSize, setPenSize] = useState<number>(PEN_SIZES[1]);
+  const [paper, setPaper] = useState<PaperKind>(sentence.paper ?? 'plain');
+  const [penOnly, setPenOnly] = useState<boolean>(true);
+  const [charStyles, setCharStyles] = useState<Record<number, CharStyle>>(sentence.charStyles ?? {});
+  const [editingChar, setEditingChar] = useState<number | null>(null);
   const [done, setDone] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({ w: 800, h: 480 });
 
   useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 100);
+    const update = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const w = Math.max(280, Math.floor(rect.width));
+      const h = Math.max(320, Math.floor(Math.min(window.innerHeight * 0.55, w * 0.7)));
+      setCanvasSize({ w, h });
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
   }, []);
 
-  const target = sentence.text;
-  const progress = Math.min(input.length / target.length, 1);
-  const canComplete = input.trim().length > 0;
+  const drawAll = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const ratio = window.devicePixelRatio || 1;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const all = currentStrokeRef.current ? [...strokes, currentStrokeRef.current] : strokes;
+    for (const s of all) {
+      if (s.points.length === 0) continue;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+      ctx.strokeStyle = s.color;
+      if (s.points.length === 1) {
+        const p = s.points[0];
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (s.size * (0.6 + p.p * 0.6)) / 2, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        continue;
+      }
+      for (let i = 1; i < s.points.length; i++) {
+        const a = s.points[i - 1];
+        const b = s.points[i];
+        const w = s.size * (0.6 + ((a.p + b.p) / 2) * 0.6);
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }, [strokes]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = canvasSize.w * ratio;
+    canvas.height = canvasSize.h * ratio;
+    canvas.style.width = `${canvasSize.w}px`;
+    canvas.style.height = `${canvasSize.h}px`;
+    drawAll();
+  }, [canvasSize, drawAll]);
+
+  useEffect(() => {
+    drawAll();
+  }, [drawAll]);
+
+  const getPos = (e: ReactPointerEvent<HTMLCanvasElement>): Point => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      p: e.pressure > 0 ? e.pressure : 0.5,
+    };
+  };
+
+  const shouldDraw = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!penOnly) return true;
+    return e.pointerType === 'pen' || e.pointerType === 'mouse';
+  };
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!shouldDraw(e)) return;
+    e.preventDefault();
+    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    const p = getPos(e);
+    currentStrokeRef.current = {
+      tool,
+      color: tool === 'pen' ? penColor : '#000000',
+      size: tool === 'pen' ? penSize : penSize * 3,
+      points: [p],
+    };
+    drawAll();
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!currentStrokeRef.current) return;
+    if (!shouldDraw(e)) return;
+    const p = getPos(e);
+    currentStrokeRef.current.points.push(p);
+    drawAll();
+  };
+
+  const onPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!currentStrokeRef.current) return;
+    const finished = currentStrokeRef.current;
+    currentStrokeRef.current = null;
+    setStrokes((prev) => [...prev, finished]);
+    try {
+      (e.target as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const undo = () => setStrokes((prev) => prev.slice(0, -1));
+  const clearAll = () => setStrokes([]);
 
   const handleComplete = () => {
-    onComplete();
+    const src = canvasRef.current;
+    let drawing: string | undefined;
+    if (src && strokes.length > 0) {
+      const out = document.createElement('canvas');
+      out.width = canvasSize.w;
+      out.height = canvasSize.h;
+      const octx = out.getContext('2d')!;
+      paintPaper(octx, paper, canvasSize.w, canvasSize.h);
+      octx.drawImage(src, 0, 0, canvasSize.w, canvasSize.h);
+      drawing = out.toDataURL('image/png');
+    }
+    onComplete({ drawing, charStyles, paper });
     setDone(true);
     setTimeout(() => onBack(), 1400);
+  };
+
+  const updateCharStyle = (i: number, patch: Partial<CharStyle>) => {
+    setCharStyles((prev) => ({ ...prev, [i]: { ...prev[i], ...patch } }));
+  };
+
+  const resetCharStyle = (i: number) => {
+    setCharStyles((prev) => {
+      const next = { ...prev };
+      delete next[i];
+      return next;
+    });
   };
 
   if (done) {
@@ -483,48 +730,377 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="max-w-2xl mx-auto w-full px-6 py-10 flex items-center justify-between" style={{ fontFamily: SANS }}>
+      <header className="max-w-3xl mx-auto w-full px-6 py-8 flex items-center justify-between" style={{ fontFamily: SANS }}>
         <button onClick={onBack} className="text-stone-500 hover:text-stone-800 flex items-center gap-1 transition-colors text-sm">
           <ChevronLeft size={18} /> 돌아가기
         </button>
-        <span className="text-xs text-stone-400">{Math.round(progress * 100)}%</span>
+        <div className="flex items-center gap-3 text-xs text-stone-500">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={penOnly}
+              onChange={(e) => setPenOnly(e.target.checked)}
+              className="accent-stone-700"
+            />
+            펜으로만
+          </label>
+          <button
+            onClick={handleComplete}
+            className="px-4 py-1.5 bg-stone-800 hover:bg-stone-900 text-stone-100 rounded-full text-sm flex items-center gap-1.5"
+          >
+            <Check size={14} /> 다 적었어요
+          </button>
+        </div>
       </header>
 
-      <div className="max-w-2xl mx-auto w-full px-6 flex-1 flex flex-col justify-center pb-32">
-        <div className="mb-12">
-          <p className="text-xs text-stone-400 mb-4 tracking-widest" style={{ fontFamily: SANS }}>따라 적을 문장</p>
-          <p className="text-stone-400 text-xl leading-loose select-none" style={{ wordBreak: 'keep-all' }}>
-            {target}
+      <div className="max-w-3xl mx-auto w-full px-6 pb-32">
+        <div className="mb-8">
+          <p className="text-xs text-stone-400 mb-4 tracking-widest" style={{ fontFamily: SANS }}>
+            따라 적을 문장 · 글씨를 눌러 꾸며보세요
           </p>
+          <StyledSentence
+            text={sentence.text}
+            charStyles={charStyles}
+            baseSize={22}
+            onCharTap={(i) => setEditingChar(i === editingChar ? null : i)}
+            selectedIndex={editingChar}
+          />
+          {editingChar !== null && (
+            <CharStylePicker
+              ch={Array.from(sentence.text)[editingChar] ?? ''}
+              style={charStyles[editingChar] ?? {}}
+              onChange={(patch) => updateCharStyle(editingChar, patch)}
+              onReset={() => resetCharStyle(editingChar)}
+              onClose={() => setEditingChar(null)}
+            />
+          )}
         </div>
 
         <div>
-          <p className="text-xs text-stone-400 mb-4 tracking-widest" style={{ fontFamily: SANS }}>나의 필사</p>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="천천히, 한 글자씩 따라 적어보세요"
-            rows={6}
-            className="w-full bg-transparent outline-none resize-none text-stone-800 text-xl leading-loose placeholder-stone-300"
-            style={{ wordBreak: 'keep-all', fontFamily: SERIF }}
+          <p className="text-xs text-stone-400 mb-3 tracking-widest" style={{ fontFamily: SANS }}>나의 필사</p>
+          <div ref={containerRef} className="relative rounded-lg overflow-hidden border border-stone-200" style={{ background: '#fff' }}>
+            <PaperBackground kind={paper} width={canvasSize.w} height={canvasSize.h} />
+            <canvas
+              ref={canvasRef}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              className="block relative"
+              style={{ touchAction: 'none', cursor: tool === 'eraser' ? 'cell' : 'crosshair' }}
+            />
+          </div>
+
+          <Toolbar
+            tool={tool}
+            setTool={setTool}
+            penColor={penColor}
+            setPenColor={setPenColor}
+            penSize={penSize}
+            setPenSize={setPenSize}
+            paper={paper}
+            setPaper={setPaper}
+            onUndo={undo}
+            onClear={clearAll}
+            canUndo={strokes.length > 0}
           />
         </div>
-
-        {canComplete && (
-          <button
-            onClick={handleComplete}
-            className="mt-10 self-center px-8 py-3 bg-stone-800 hover:bg-stone-900 text-stone-100 rounded-full flex items-center gap-2 transition-colors"
-            style={{ fontFamily: SANS }}
-          >
-            <Check size={16} /> 다 적었어요
-          </button>
-        )}
-      </div>
-
-      <div className="fixed bottom-0 left-0 right-0 h-0.5 bg-stone-200">
-        <div className="h-full bg-stone-500 transition-all duration-300" style={{ width: `${progress * 100}%` }} />
       </div>
     </div>
   );
+}
+
+function CharStylePicker({
+  ch,
+  style,
+  onChange,
+  onReset,
+  onClose,
+}: {
+  ch: string;
+  style: CharStyle;
+  onChange: (patch: Partial<CharStyle>) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mt-4 bg-white border border-stone-200 rounded-lg p-4 shadow-sm" style={{ fontFamily: SANS }}>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-stone-500">
+          <span className="mr-2 text-stone-800 text-base">「{ch}」</span> 글씨 꾸미기
+        </span>
+        <div className="flex items-center gap-3 text-xs">
+          <button onClick={onReset} className="text-stone-500 hover:text-stone-800 flex items-center gap-1">
+            <RotateCcw size={12} /> 초기화
+          </button>
+          <button onClick={onClose} className="text-stone-500 hover:text-stone-800">닫기</button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <p className="text-[10px] text-stone-400 tracking-widest mb-1.5 flex items-center gap-1"><Type size={11} /> 폰트</p>
+          <div className="flex flex-wrap gap-1.5">
+            {FONTS.map((f) => {
+              const active = (style.fontId ?? 'serif') === f.id;
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => onChange({ fontId: f.id })}
+                  className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                    active ? 'border-stone-800 bg-stone-800 text-stone-50' : 'border-stone-200 text-stone-600 hover:border-stone-400'
+                  }`}
+                  style={{ fontFamily: f.family }}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[10px] text-stone-400 tracking-widest mb-1.5">크기</p>
+          <div className="flex gap-1.5">
+            {[0.75, 1, 1.4, 1.8].map((s) => {
+              const active = (style.sizeScale ?? 1) === s;
+              return (
+                <button
+                  key={s}
+                  onClick={() => onChange({ sizeScale: s })}
+                  className={`px-2.5 py-1 rounded-md text-xs border ${
+                    active ? 'border-stone-800 bg-stone-800 text-stone-50' : 'border-stone-200 text-stone-600 hover:border-stone-400'
+                  }`}
+                >
+                  {s === 1 ? '기본' : `${s}x`}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[10px] text-stone-400 tracking-widest mb-1.5 flex items-center gap-1"><Palette size={11} /> 색</p>
+          <div className="flex gap-1.5">
+            {CHAR_COLORS.map((c) => {
+              const active = (style.color ?? '#292524') === c;
+              return (
+                <button
+                  key={c}
+                  onClick={() => onChange({ color: c })}
+                  className={`w-7 h-7 rounded-full border-2 ${active ? 'border-stone-800' : 'border-stone-200'}`}
+                  style={{ backgroundColor: c }}
+                  aria-label={c}
+                />
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toolbar({
+  tool,
+  setTool,
+  penColor,
+  setPenColor,
+  penSize,
+  setPenSize,
+  paper,
+  setPaper,
+  onUndo,
+  onClear,
+  canUndo,
+}: {
+  tool: 'pen' | 'eraser';
+  setTool: (t: 'pen' | 'eraser') => void;
+  penColor: string;
+  setPenColor: (c: string) => void;
+  penSize: number;
+  setPenSize: (s: number) => void;
+  paper: PaperKind;
+  setPaper: (p: PaperKind) => void;
+  onUndo: () => void;
+  onClear: () => void;
+  canUndo: boolean;
+}) {
+  return (
+    <div className="mt-4 bg-white/80 border border-stone-200 rounded-lg p-3 space-y-3" style={{ fontFamily: SANS }}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex border border-stone-200 rounded-md overflow-hidden">
+          <button
+            onClick={() => setTool('pen')}
+            className={`px-3 py-1.5 text-xs flex items-center gap-1 ${
+              tool === 'pen' ? 'bg-stone-800 text-stone-50' : 'text-stone-600 hover:bg-stone-50'
+            }`}
+          >
+            <PenLine size={13} /> 펜
+          </button>
+          <button
+            onClick={() => setTool('eraser')}
+            className={`px-3 py-1.5 text-xs flex items-center gap-1 border-l border-stone-200 ${
+              tool === 'eraser' ? 'bg-stone-800 text-stone-50' : 'text-stone-600 hover:bg-stone-50'
+            }`}
+          >
+            <Eraser size={13} /> 지우개
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 ml-1">
+          {PEN_SIZES.map((s) => (
+            <button
+              key={s}
+              onClick={() => setPenSize(s)}
+              className={`w-7 h-7 rounded-full border flex items-center justify-center ${
+                penSize === s ? 'border-stone-800' : 'border-stone-200'
+              }`}
+              aria-label={`두께 ${s}`}
+            >
+              <span className="block rounded-full bg-stone-800" style={{ width: s + 2, height: s + 2 }} />
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1.5 ml-1">
+          {PEN_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => {
+                setTool('pen');
+                setPenColor(c);
+              }}
+              className={`w-6 h-6 rounded-full border-2 ${penColor === c && tool === 'pen' ? 'border-stone-800' : 'border-stone-200'}`}
+              style={{ backgroundColor: c }}
+              aria-label={c}
+            />
+          ))}
+        </div>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            className="text-xs px-2.5 py-1.5 rounded-md border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:text-stone-300 flex items-center gap-1"
+          >
+            <Undo2 size={12} /> 되돌리기
+          </button>
+          <button
+            onClick={onClear}
+            disabled={!canUndo}
+            className="text-xs px-2.5 py-1.5 rounded-md border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:text-stone-300"
+          >
+            전체 지우기
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] text-stone-400 tracking-widest mr-1">종이</span>
+        {PAPERS.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => setPaper(p.id)}
+            className={`px-2.5 py-1 rounded-md text-xs border ${
+              paper === p.id ? 'border-stone-800 bg-stone-800 text-stone-50' : 'border-stone-200 text-stone-600 hover:border-stone-400'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PaperBackground({ kind, width, height }: { kind: PaperKind; width: number; height: number }) {
+  const style = useMemo<CSSProperties>(() => {
+    const base: CSSProperties = {
+      position: 'absolute',
+      inset: 0,
+      width,
+      height,
+      pointerEvents: 'none',
+    };
+    if (kind === 'plain') return { ...base, background: '#ffffff' };
+    if (kind === 'hanji') {
+      return {
+        ...base,
+        background:
+          'radial-gradient(circle at 20% 30%, rgba(180,150,100,0.10), transparent 60%), radial-gradient(circle at 80% 70%, rgba(180,150,100,0.08), transparent 60%), #f7f2e6',
+      };
+    }
+    if (kind === 'lined') {
+      return {
+        ...base,
+        backgroundColor: '#ffffff',
+        backgroundImage: 'repeating-linear-gradient(to bottom, transparent 0, transparent 39px, rgba(120,113,108,0.25) 39px, rgba(120,113,108,0.25) 40px)',
+      };
+    }
+    if (kind === 'grid') {
+      return {
+        ...base,
+        backgroundColor: '#ffffff',
+        backgroundImage:
+          'repeating-linear-gradient(to right, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px), repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(120,113,108,0.20) 31px, rgba(120,113,108,0.20) 32px)',
+      };
+    }
+    if (kind === 'dot') {
+      return {
+        ...base,
+        backgroundColor: '#ffffff',
+        backgroundImage: 'radial-gradient(rgba(120,113,108,0.35) 1px, transparent 1.5px)',
+        backgroundSize: '20px 20px',
+      };
+    }
+    return base;
+  }, [kind, width, height]);
+  return <div style={style} />;
+}
+
+function paintPaper(ctx: CanvasRenderingContext2D, kind: PaperKind, w: number, h: number) {
+  ctx.save();
+  ctx.fillStyle = kind === 'hanji' ? '#f7f2e6' : '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(120,113,108,0.25)';
+  ctx.lineWidth = 1;
+  if (kind === 'lined') {
+    for (let y = 40; y < h; y += 40) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+  } else if (kind === 'grid') {
+    ctx.strokeStyle = 'rgba(120,113,108,0.20)';
+    for (let x = 32; x < w; x += 32) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (let y = 32; y < h; y += 32) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+  } else if (kind === 'dot') {
+    ctx.fillStyle = 'rgba(120,113,108,0.35)';
+    for (let y = 20; y < h; y += 20) {
+      for (let x = 20; x < w; x += 20) {
+        ctx.beginPath();
+        ctx.arc(x, y, 1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (kind === 'hanji') {
+    const grad = ctx.createRadialGradient(w * 0.2, h * 0.3, 0, w * 0.2, h * 0.3, Math.max(w, h) * 0.6);
+    grad.addColorStop(0, 'rgba(180,150,100,0.10)');
+    grad.addColorStop(1, 'transparent');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.restore();
 }
