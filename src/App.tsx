@@ -30,6 +30,15 @@ import {
   Camera,
   Loader2,
   X,
+  Sun,
+  Moon,
+  Timer,
+  Eye,
+  EyeOff,
+  BookOpen,
+  BarChart3,
+  LayoutGrid,
+  Pause,
 } from 'lucide-react';
 
 const SERIF = '"Noto Serif KR", "Nanum Myeongjo", "Apple SD Gothic Neo", serif';
@@ -37,6 +46,10 @@ const SANS = '"Pretendard", -apple-system, BlinkMacSystemFont, system-ui, sans-s
 const BG = '#f6f1e7';
 const STORAGE_KEY = 'munjang.archive';
 const STORAGE_VERSION = 2;
+const THEME_KEY = 'munjang.theme';
+const GROUP_KEY = 'munjang.grouping';
+
+const TIMER_PRESETS = [5, 10, 15, 25];
 
 const FONTS = [
   { id: 'serif', label: '명조', family: SERIF },
@@ -118,10 +131,13 @@ type Sentence = {
   backgroundImage?: string;
   canvasW?: number;
   canvasH?: number;
+  transcribeDuration?: number;
+  favorite?: boolean;
 };
 
 type NewSentenceInput = Pick<Sentence, 'text' | 'title' | 'author' | 'page' | 'tags'>;
-type View = 'archive' | 'add' | 'detail' | 'transcribe' | 'calendar' | 'replay';
+type View = 'archive' | 'add' | 'detail' | 'transcribe' | 'calendar' | 'replay' | 'gallery' | 'stats';
+type Grouping = 'recent' | 'book';
 
 function loadSentences(): Sentence[] {
   try {
@@ -194,11 +210,19 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [dark, setDark] = useState<boolean>(false);
 
   useEffect(() => {
     setSentences(loadSentences());
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'dark') setDark(true);
+    else if (t === null && window.matchMedia('(prefers-color-scheme: dark)').matches) setDark(true);
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light');
+  }, [dark]);
 
   const persist = (data: Sentence[]) => {
     setSentences(data);
@@ -268,29 +292,38 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: BG }}>
-        <div className="text-stone-400" style={{ fontFamily: SANS }}>불러오는 중…</div>
+      <div className={dark ? 'dark' : ''}>
+        <div className="min-h-screen flex items-center justify-center bg-[#f6f1e7] dark:bg-stone-950">
+          <div className="text-stone-400" style={{ fontFamily: SANS }}>불러오는 중…</div>
+        </div>
       </div>
     );
   }
 
+  const onSelect = (id: string) => {
+    setSelectedId(id);
+    setView('detail');
+  };
+
   return (
-    <div className="min-h-screen" style={{ backgroundColor: BG, fontFamily: SERIF }}>
+    <div className={dark ? 'dark' : ''}>
+    <div className="min-h-screen bg-[#f6f1e7] dark:bg-stone-950 text-stone-800 dark:text-stone-100" style={{ fontFamily: SERIF }}>
       {view === 'archive' && (
         <ArchiveView
           sentences={filtered}
           allSentences={sentences}
           totalCount={sentences.length}
           onAdd={() => setView('add')}
-          onSelect={(id) => {
-            setSelectedId(id);
-            setView('detail');
-          }}
+          onSelect={onSelect}
           onCalendar={() => setView('calendar')}
+          onGallery={() => setView('gallery')}
+          onStats={() => setView('stats')}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           onExport={exportJson}
           onImport={importJson}
+          dark={dark}
+          onToggleDark={() => setDark((v) => !v)}
         />
       )}
       {view === 'add' && <AddView onSave={addSentence} onCancel={() => setView('archive')} />}
@@ -320,9 +353,16 @@ export default function App() {
       {view === 'calendar' && (
         <CalendarView sentences={sentences} onBack={() => setView('archive')} />
       )}
+      {view === 'gallery' && (
+        <GalleryView sentences={sentences} onBack={() => setView('archive')} onSelect={onSelect} />
+      )}
+      {view === 'stats' && (
+        <StatsView sentences={sentences} onBack={() => setView('archive')} />
+      )}
       {view === 'replay' && selected && (
         <ReplayView sentence={selected} onBack={() => setView('detail')} />
       )}
+    </div>
     </div>
   );
 }
@@ -334,10 +374,14 @@ type ArchiveViewProps = {
   onAdd: () => void;
   onSelect: (id: string) => void;
   onCalendar: () => void;
+  onGallery: () => void;
+  onStats: () => void;
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   onExport: () => void;
   onImport: (file: File) => void;
+  dark: boolean;
+  onToggleDark: () => void;
 };
 
 function ArchiveView({
@@ -347,19 +391,43 @@ function ArchiveView({
   onAdd,
   onSelect,
   onCalendar,
+  onGallery,
+  onStats,
   searchQuery,
   setSearchQuery,
   onExport,
   onImport,
+  dark,
+  onToggleDark,
 }: ArchiveViewProps) {
   const [showSearch, setShowSearch] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [grouping, setGrouping] = useState<Grouping>(() => (localStorage.getItem(GROUP_KEY) as Grouping) || 'recent');
   const fileRef = useRef<HTMLInputElement | null>(null);
   const streak = useMemo(() => computeStreak(allSentences), [allSentences]);
   const todayPick = useMemo(() => {
     if (allSentences.length === 0) return null;
     return allSentences[seededIndex(todaySeed(), allSentences.length)];
   }, [allSentences]);
+
+  useEffect(() => {
+    localStorage.setItem(GROUP_KEY, grouping);
+  }, [grouping]);
+
+  const grouped = useMemo(() => {
+    if (grouping !== 'book') return null;
+    const map = new Map<string, Sentence[]>();
+    for (const s of sentences) {
+      const k = (s.title || '').trim() || '__none__';
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(s);
+    }
+    return Array.from(map.entries()).sort((a, b) => {
+      if (a[0] === '__none__') return 1;
+      if (b[0] === '__none__') return -1;
+      return a[0].localeCompare(b[0], 'ko');
+    });
+  }, [grouping, sentences]);
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12 pb-32">
@@ -373,33 +441,54 @@ function ArchiveView({
         </div>
         <div className="flex items-center gap-1">
           <button
+            onClick={onGallery}
+            className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
+            aria-label="갤러리"
+          >
+            <LayoutGrid size={19} />
+          </button>
+          <button
             onClick={onCalendar}
-            className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+            className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
             aria-label="달력"
           >
             <CalendarDays size={20} />
+          </button>
+          <button
+            onClick={onStats}
+            className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
+            aria-label="통계"
+          >
+            <BarChart3 size={19} />
           </button>
           <button
             onClick={() => {
               setShowSearch(!showSearch);
               if (showSearch) setSearchQuery('');
             }}
-            className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+            className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
             aria-label="검색"
           >
             <Search size={20} />
           </button>
+          <button
+            onClick={onToggleDark}
+            className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
+            aria-label={dark ? '밝게' : '어둡게'}
+          >
+            {dark ? <Sun size={19} /> : <Moon size={19} />}
+          </button>
           <div className="relative">
             <button
               onClick={() => setShowMenu((v) => !v)}
-              className="text-stone-500 hover:text-stone-800 transition-colors p-2"
+              className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 transition-colors p-2"
               aria-label="더보기"
             >
               <span className="text-xl leading-none">⋯</span>
             </button>
             {showMenu && (
               <div
-                className="absolute right-0 top-full mt-1 bg-white border border-stone-200 rounded-lg shadow-md py-1 z-10 min-w-[10rem]"
+                className="absolute right-0 top-full mt-1 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-lg shadow-md py-1 z-10 min-w-[10rem]"
                 style={{ fontFamily: SANS }}
                 onMouseLeave={() => setShowMenu(false)}
               >
@@ -408,7 +497,7 @@ function ArchiveView({
                     onExport();
                     setShowMenu(false);
                   }}
-                  className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 flex items-center gap-2"
                 >
                   <Download size={14} /> 백업 내보내기
                 </button>
@@ -417,7 +506,7 @@ function ArchiveView({
                     fileRef.current?.click();
                     setShowMenu(false);
                   }}
-                  className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700 flex items-center gap-2"
                 >
                   <Upload size={14} /> 백업 불러오기
                 </button>
@@ -470,51 +559,101 @@ function ArchiveView({
         </button>
       )}
 
+      {sentences.length > 0 && (
+        <div className="mb-6 flex items-center gap-1 text-xs" style={{ fontFamily: SANS }}>
+          <button
+            onClick={() => setGrouping('recent')}
+            className={`px-2.5 py-1 rounded-md ${
+              grouping === 'recent'
+                ? 'bg-stone-800 dark:bg-stone-200 text-stone-50 dark:text-stone-900'
+                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100'
+            }`}
+          >
+            최신순
+          </button>
+          <button
+            onClick={() => setGrouping('book')}
+            className={`px-2.5 py-1 rounded-md flex items-center gap-1 ${
+              grouping === 'book'
+                ? 'bg-stone-800 dark:bg-stone-200 text-stone-50 dark:text-stone-900'
+                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100'
+            }`}
+          >
+            <BookOpen size={11} /> 책별
+          </button>
+        </div>
+      )}
+
       {sentences.length === 0 ? (
         <div className="text-center py-24">
-          <p className="text-stone-500 mb-3 text-lg" style={{ wordBreak: 'keep-all' }}>
+          <p className="text-stone-500 dark:text-stone-400 mb-3 text-lg" style={{ wordBreak: 'keep-all' }}>
             아직 모은 문장이 없어요
           </p>
-          <p className="text-stone-400 text-sm" style={{ fontFamily: SANS }}>
+          <p className="text-stone-400 dark:text-stone-500 text-sm" style={{ fontFamily: SANS }}>
             마음에 닿은 한 문장부터, 천천히
           </p>
+        </div>
+      ) : grouped ? (
+        <div className="space-y-10">
+          {grouped.map(([key, items]) => (
+            <div key={key}>
+              <div className="flex items-end justify-between mb-4">
+                <h3 className="text-stone-700 dark:text-stone-200 text-base" style={{ fontFamily: SERIF }}>
+                  {key === '__none__' ? <span className="italic text-stone-400 dark:text-stone-500">출처 없음</span> : <span className="italic">『{key}』</span>}
+                </h3>
+                <span className="text-xs text-stone-400 dark:text-stone-500" style={{ fontFamily: SANS }}>
+                  {items.length}개
+                </span>
+              </div>
+              <div className="space-y-4">
+                {items.map((s) => (
+                  <SentenceCard key={s.id} sentence={s} onSelect={onSelect} />
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="space-y-5">
           {sentences.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => onSelect(s.id)}
-              className="w-full text-left bg-white/70 hover:bg-white border border-stone-200/70 rounded-lg p-7 transition-all hover:shadow-sm"
-            >
-              <p className="text-stone-800 text-lg leading-loose mb-5" style={{ wordBreak: 'keep-all' }}>
-                {s.text.length > 140 ? s.text.slice(0, 140) + '…' : s.text}
-              </p>
-              <div className="flex items-center justify-between text-xs text-stone-500" style={{ fontFamily: SANS }}>
-                <span>
-                  {s.title && <span className="italic">『{s.title}』</span>}
-                  {s.author && <span> · {s.author}</span>}
-                  {!s.title && !s.author && <span className="text-stone-400">출처 없음</span>}
-                </span>
-                {s.transcribed && (
-                  <span className="flex items-center gap-1 text-stone-400">
-                    <PenLine size={11} /> 필사함
-                  </span>
-                )}
-              </div>
-            </button>
+            <SentenceCard key={s.id} sentence={s} onSelect={onSelect} />
           ))}
         </div>
       )}
 
       <button
         onClick={onAdd}
-        className="fixed bottom-8 right-8 w-14 h-14 bg-stone-800 hover:bg-stone-900 text-stone-100 rounded-full shadow-lg flex items-center justify-center transition-colors"
+        className="fixed bottom-8 right-8 w-14 h-14 bg-stone-800 hover:bg-stone-900 dark:bg-stone-200 dark:hover:bg-stone-50 text-stone-100 dark:text-stone-900 rounded-full shadow-lg flex items-center justify-center transition-colors"
         aria-label="문장 추가"
       >
         <Plus size={22} />
       </button>
     </div>
+  );
+}
+
+function SentenceCard({ sentence: s, onSelect }: { sentence: Sentence; onSelect: (id: string) => void }) {
+  return (
+    <button
+      onClick={() => onSelect(s.id)}
+      className="w-full text-left bg-white/70 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-900 border border-stone-200/70 dark:border-stone-700 rounded-lg p-7 transition-all hover:shadow-sm"
+    >
+      <p className="text-stone-800 dark:text-stone-100 text-lg leading-loose mb-5" style={{ wordBreak: 'keep-all' }}>
+        {s.text.length > 140 ? s.text.slice(0, 140) + '…' : s.text}
+      </p>
+      <div className="flex items-center justify-between text-xs text-stone-500 dark:text-stone-400" style={{ fontFamily: SANS }}>
+        <span>
+          {s.title && <span className="italic">『{s.title}』</span>}
+          {s.author && <span> · {s.author}</span>}
+          {!s.title && !s.author && <span className="text-stone-400 dark:text-stone-500">출처 없음</span>}
+        </span>
+        {s.transcribed && (
+          <span className="flex items-center gap-1 text-stone-400 dark:text-stone-500">
+            <PenLine size={11} /> 필사함
+          </span>
+        )}
+      </div>
+    </button>
   );
 }
 
@@ -940,6 +1079,7 @@ type TranscribeViewProps = {
     backgroundImage?: string;
     canvasW?: number;
     canvasH?: number;
+    transcribeDuration?: number;
   }) => void;
 };
 
@@ -963,6 +1103,26 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
   const [done, setDone] = useState(false);
   const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({ w: 800, h: 480 });
   const bgFileRef = useRef<HTMLInputElement | null>(null);
+  const [tracing, setTracing] = useState(false);
+  const [timerMin, setTimerMin] = useState<number>(0);
+  const [timerStart, setTimerStart] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(Date.now());
+  const sessionStartRef = useRef<number>(Date.now());
+
+  const timerSecondsLeft = timerStart && timerMin > 0 ? Math.max(0, timerMin * 60 - Math.floor((now - timerStart) / 1000)) : null;
+
+  useEffect(() => {
+    if (!timerStart) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [timerStart]);
+
+  useEffect(() => {
+    if (timerSecondsLeft === 0 && timerStart) {
+      playChime();
+      setTimerStart(null);
+    }
+  }, [timerSecondsLeft, timerStart]);
 
   useEffect(() => {
     const update = () => {
@@ -1115,6 +1275,7 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
   };
 
   const handleComplete = () => {
+    const elapsed = Math.round((Date.now() - sessionStartRef.current) / 1000);
     onComplete({
       strokes,
       stickers,
@@ -1124,6 +1285,7 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
       canvasW: canvasSize.w,
       canvasH: canvasSize.h,
       drawing: undefined,
+      transcribeDuration: (sentence.transcribeDuration ?? 0) + elapsed,
     });
     setDone(true);
     setTimeout(() => onBack(), 1400);
@@ -1154,18 +1316,39 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="max-w-3xl mx-auto w-full px-6 py-8 flex items-center justify-between" style={{ fontFamily: SANS }}>
-        <button onClick={onBack} className="text-stone-500 hover:text-stone-800 flex items-center gap-1 transition-colors text-sm">
+      <header className="max-w-3xl mx-auto w-full px-6 py-8 flex items-center justify-between flex-wrap gap-3" style={{ fontFamily: SANS }}>
+        <button onClick={onBack} className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 flex items-center gap-1 transition-colors text-sm">
           <ChevronLeft size={18} /> 돌아가기
         </button>
-        <div className="flex items-center gap-3 text-xs text-stone-500">
+        <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400 flex-wrap">
+          <button
+            onClick={() => setTracing((v) => !v)}
+            className={`px-2.5 py-1.5 rounded-md border flex items-center gap-1 ${
+              tracing
+                ? 'border-stone-800 bg-stone-800 text-stone-50 dark:bg-stone-200 dark:border-stone-200 dark:text-stone-900'
+                : 'border-stone-200 dark:border-stone-700 hover:border-stone-400'
+            }`}
+          >
+            {tracing ? <Eye size={12} /> : <EyeOff size={12} />}
+            가이드
+          </button>
+          <TimerControl
+            timerMin={timerMin}
+            setTimerMin={setTimerMin}
+            secondsLeft={timerSecondsLeft}
+            running={!!timerStart}
+            onStart={() => {
+              if (timerMin > 0) setTimerStart(Date.now());
+            }}
+            onStop={() => setTimerStart(null)}
+          />
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
             <input type="checkbox" checked={penOnly} onChange={(e) => setPenOnly(e.target.checked)} className="accent-stone-700" />
             펜으로만
           </label>
           <button
             onClick={handleComplete}
-            className="px-4 py-1.5 bg-stone-800 hover:bg-stone-900 text-stone-100 rounded-full text-sm flex items-center gap-1.5"
+            className="px-4 py-1.5 bg-stone-800 hover:bg-stone-900 dark:bg-stone-200 dark:hover:bg-stone-50 text-stone-100 dark:text-stone-900 rounded-full text-sm flex items-center gap-1.5"
           >
             <Check size={14} /> 다 적었어요
           </button>
@@ -1197,8 +1380,16 @@ function TranscribeView({ sentence, onBack, onComplete }: TranscribeViewProps) {
 
         <div>
           <p className="text-xs text-stone-400 mb-3 tracking-widest" style={{ fontFamily: SANS }}>나의 필사</p>
-          <div ref={containerRef} className="relative rounded-lg overflow-hidden border border-stone-200" style={{ background: '#fff' }}>
+          <div ref={containerRef} className="relative rounded-lg overflow-hidden border border-stone-200 dark:border-stone-700" style={{ background: '#fff' }}>
             <PaperBackground kind={paper} width={canvasSize.w} height={canvasSize.h} />
+            {tracing && (
+              <TracingOverlay
+                text={sentence.text}
+                charStyles={charStyles}
+                width={canvasSize.w}
+                height={canvasSize.h}
+              />
+            )}
             <canvas
               ref={canvasRef}
               onPointerDown={onPointerDown}
@@ -2190,4 +2381,352 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+function TracingOverlay({
+  text,
+  charStyles,
+  width,
+  height,
+}: {
+  text: string;
+  charStyles: Record<number, CharStyle>;
+  width: number;
+  height: number;
+}) {
+  const chars = Array.from(text);
+  const baseSize = Math.max(28, Math.min(64, Math.floor(height / 6)));
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center px-8 py-6"
+      style={{ pointerEvents: 'none', width, height, opacity: 0.18 }}
+    >
+      <p className="leading-loose text-center" style={{ wordBreak: 'keep-all' }}>
+        {chars.map((ch, i) => {
+          const st = charStyles?.[i];
+          const fontFamily = FONTS.find((f) => f.id === (st?.fontId ?? 'serif'))?.family ?? SERIF;
+          const size = baseSize * (st?.sizeScale ?? 1);
+          const rotation = st?.rotation ?? 0;
+          return (
+            <span
+              key={i}
+              style={{
+                fontFamily,
+                fontSize: `${size}px`,
+                color: '#1c1917',
+                display: 'inline-block',
+                transform: rotation ? `rotate(${rotation}deg)` : undefined,
+                transformOrigin: 'center',
+                whiteSpace: ch === '\n' ? 'pre' : undefined,
+              }}
+            >
+              {ch}
+            </span>
+          );
+        })}
+      </p>
+    </div>
+  );
+}
+
+function TimerControl({
+  timerMin,
+  setTimerMin,
+  secondsLeft,
+  running,
+  onStart,
+  onStop,
+}: {
+  timerMin: number;
+  setTimerMin: (m: number) => void;
+  secondsLeft: number | null;
+  running: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const display = running && secondsLeft != null
+    ? `${String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:${String(secondsLeft % 60).padStart(2, '0')}`
+    : timerMin > 0
+    ? `${timerMin}분`
+    : '타이머';
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          if (running) onStop();
+          else if (timerMin > 0) onStart();
+          else setOpen((v) => !v);
+        }}
+        className={`px-2.5 py-1.5 rounded-md border flex items-center gap-1 ${
+          running
+            ? 'border-stone-800 bg-stone-800 text-stone-50 dark:bg-stone-200 dark:border-stone-200 dark:text-stone-900'
+            : 'border-stone-200 dark:border-stone-700 hover:border-stone-400'
+        }`}
+      >
+        {running ? <Pause size={12} /> : <Timer size={12} />} {display}
+      </button>
+      {(timerMin > 0 || open) && !running && (
+        <div className="absolute top-full right-0 mt-1 bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-md shadow-md p-2 z-10 flex flex-wrap gap-1 min-w-[12rem]">
+          {TIMER_PRESETS.map((m) => (
+            <button
+              key={m}
+              onClick={() => {
+                setTimerMin(m);
+                setOpen(false);
+              }}
+              className={`px-2.5 py-1 rounded-md text-xs ${
+                timerMin === m
+                  ? 'bg-stone-800 dark:bg-stone-200 text-stone-50 dark:text-stone-900'
+                  : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700'
+              }`}
+            >
+              {m}분
+            </button>
+          ))}
+          {timerMin > 0 && (
+            <button
+              onClick={() => {
+                setTimerMin(0);
+                setOpen(false);
+              }}
+              className="px-2.5 py-1 rounded-md text-xs text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-700"
+            >
+              끄기
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function playChime() {
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AC();
+    const now = ctx.currentTime;
+    const notes = [660, 880, 1320];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t = now + i * 0.18;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.65);
+    });
+    setTimeout(() => ctx.close(), 1500);
+  } catch {}
+}
+
+type GalleryViewProps = {
+  sentences: Sentence[];
+  onBack: () => void;
+  onSelect: (id: string) => void;
+};
+
+function GalleryView({ sentences, onBack, onSelect }: GalleryViewProps) {
+  const items = sentences.filter((s) => (s.strokes && s.strokes.length > 0) || s.drawing);
+  return (
+    <div className="max-w-5xl mx-auto px-6 py-12 pb-32">
+      <header className="flex items-center justify-between mb-10" style={{ fontFamily: SANS }}>
+        <button onClick={onBack} className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 flex items-center gap-1 text-sm">
+          <ChevronLeft size={18} /> 목록
+        </button>
+        <h2 className="text-stone-600 dark:text-stone-300 text-sm">필사 갤러리 · {items.length}장</h2>
+        <div className="w-12" />
+      </header>
+      {items.length === 0 ? (
+        <div className="text-center py-24 text-stone-500 dark:text-stone-400" style={{ fontFamily: SANS }}>
+          아직 필사한 글씨가 없어요
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          {items.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => onSelect(s.id)}
+              className="text-left bg-white dark:bg-stone-900/60 border border-stone-200 dark:border-stone-700 rounded-lg overflow-hidden hover:shadow-md transition-shadow"
+            >
+              <div className="aspect-[4/3] bg-stone-50 dark:bg-stone-900">
+                <TranscriptionPreview sentence={s} />
+              </div>
+              <div className="px-3 py-2.5">
+                <p className="text-xs text-stone-700 dark:text-stone-200 line-clamp-2 leading-relaxed" style={{ wordBreak: 'keep-all' }}>
+                  {s.text}
+                </p>
+                {(s.title || s.author) && (
+                  <p className="text-[10px] text-stone-400 dark:text-stone-500 mt-1.5 truncate" style={{ fontFamily: SANS }}>
+                    {s.title && <span className="italic">『{s.title}』</span>}
+                    {s.author && <span> · {s.author}</span>}
+                  </p>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type StatsViewProps = {
+  sentences: Sentence[];
+  onBack: () => void;
+};
+
+function StatsView({ sentences, onBack }: StatsViewProps) {
+  const stats = useMemo(() => {
+    const transcribed = sentences.filter((s) => s.transcribed);
+    const totalChars = sentences.reduce((acc, s) => acc + Array.from(s.text).length, 0);
+    const totalMinutes = Math.round(sentences.reduce((acc, s) => acc + (s.transcribeDuration ?? 0), 0) / 60);
+    const dates = new Set<string>();
+    for (const s of sentences) if (s.transcribedAt) dates.add(ymd(s.transcribedAt));
+
+    const bookCount = new Map<string, number>();
+    const authorCount = new Map<string, number>();
+    const tagCount = new Map<string, number>();
+    const hour = new Array(24).fill(0) as number[];
+    for (const s of sentences) {
+      if (s.title) bookCount.set(s.title, (bookCount.get(s.title) ?? 0) + 1);
+      if (s.author) authorCount.set(s.author, (authorCount.get(s.author) ?? 0) + 1);
+      for (const t of s.tags ?? []) tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
+      if (s.transcribedAt) hour[new Date(s.transcribedAt).getHours()]++;
+    }
+    const top = (m: Map<string, number>, n: number) =>
+      Array.from(m.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, n);
+
+    return {
+      total: sentences.length,
+      transcribed: transcribed.length,
+      totalChars,
+      totalMinutes,
+      days: dates.size,
+      books: top(bookCount, 5),
+      authors: top(authorCount, 5),
+      tags: top(tagCount, 8),
+      hour,
+    };
+  }, [sentences]);
+
+  const maxHour = Math.max(1, ...stats.hour);
+
+  return (
+    <div className="max-w-2xl mx-auto px-6 py-12 pb-32">
+      <header className="flex items-center justify-between mb-10" style={{ fontFamily: SANS }}>
+        <button onClick={onBack} className="text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-100 flex items-center gap-1 text-sm">
+          <ChevronLeft size={18} /> 목록
+        </button>
+        <h2 className="text-stone-600 dark:text-stone-300 text-sm">통계</h2>
+        <div className="w-12" />
+      </header>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-10" style={{ fontFamily: SANS }}>
+        <StatCard label="모은 문장" value={stats.total} />
+        <StatCard label="필사한 문장" value={stats.transcribed} />
+        <StatCard label="글자 수" value={stats.totalChars.toLocaleString()} />
+        <StatCard label="필사 시간(분)" value={stats.totalMinutes} />
+      </div>
+
+      <div className="space-y-8">
+        <StatBlock title="자주 필사한 책">
+          {stats.books.length === 0 ? (
+            <p className="text-sm text-stone-400 dark:text-stone-500" style={{ fontFamily: SANS }}>없음</p>
+          ) : (
+            <ul className="space-y-2">
+              {stats.books.map(([t, n]) => (
+                <RankRow key={t} label={`『${t}』`} count={n} max={stats.books[0][1]} />
+              ))}
+            </ul>
+          )}
+        </StatBlock>
+
+        <StatBlock title="자주 보는 저자">
+          {stats.authors.length === 0 ? (
+            <p className="text-sm text-stone-400 dark:text-stone-500" style={{ fontFamily: SANS }}>없음</p>
+          ) : (
+            <ul className="space-y-2">
+              {stats.authors.map(([t, n]) => (
+                <RankRow key={t} label={t} count={n} max={stats.authors[0][1]} />
+              ))}
+            </ul>
+          )}
+        </StatBlock>
+
+        <StatBlock title="태그">
+          {stats.tags.length === 0 ? (
+            <p className="text-sm text-stone-400 dark:text-stone-500" style={{ fontFamily: SANS }}>없음</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {stats.tags.map(([t, n]) => (
+                <span
+                  key={t}
+                  className="text-xs px-2.5 py-1 bg-stone-200/60 dark:bg-stone-700/60 text-stone-700 dark:text-stone-200 rounded-full"
+                >
+                  #{t} <span className="text-stone-400 dark:text-stone-500 ml-0.5">{n}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </StatBlock>
+
+        <StatBlock title="필사하는 시간대">
+          <div className="flex items-end gap-1 h-24">
+            {stats.hour.map((c, h) => (
+              <div key={h} className="flex-1 flex flex-col items-center gap-1">
+                <div
+                  className="w-full bg-stone-700 dark:bg-stone-300 rounded-sm"
+                  style={{ height: `${(c / maxHour) * 100}%`, minHeight: c > 0 ? 2 : 0 }}
+                />
+                {h % 3 === 0 && (
+                  <span className="text-[9px] text-stone-400 dark:text-stone-500" style={{ fontFamily: SANS }}>
+                    {h}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </StatBlock>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="bg-white/70 dark:bg-stone-900/60 border border-stone-200 dark:border-stone-700 rounded-lg p-5 text-center">
+      <p className="text-[10px] text-stone-400 dark:text-stone-500 tracking-widest mb-2">{label}</p>
+      <p className="text-2xl text-stone-800 dark:text-stone-100">{value}</p>
+    </div>
+  );
+}
+
+function StatBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-white/70 dark:bg-stone-900/60 border border-stone-200 dark:border-stone-700 rounded-lg p-6">
+      <h3 className="text-sm text-stone-600 dark:text-stone-300 tracking-wide mb-4" style={{ fontFamily: SANS }}>
+        {title}
+      </h3>
+      {children}
+    </div>
+  );
+}
+
+function RankRow({ label, count, max }: { label: string; count: number; max: number }) {
+  return (
+    <li className="flex items-center gap-3" style={{ fontFamily: SANS }}>
+      <span className="text-sm text-stone-700 dark:text-stone-200 truncate flex-shrink-0 max-w-[55%]">{label}</span>
+      <div className="flex-1 h-2 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden">
+        <div className="h-full bg-stone-700 dark:bg-stone-300" style={{ width: `${(count / max) * 100}%` }} />
+      </div>
+      <span className="text-xs text-stone-500 dark:text-stone-400 w-6 text-right">{count}</span>
+    </li>
+  );
 }
